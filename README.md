@@ -79,8 +79,13 @@ preferably for a bot user of your organization:
 
 - Resource owner: the organization (or user) that owns the repositories.
 - Repository access: only the repositories deployed by this server.
-- Permissions: `Contents: Read-only` and `Actions: Read-only` (only needed to check CI). Add `Pull requests: Read and write` if any repository
-  uses the `github` notification channel (`Metadata: Read-only` is added automatically).
+- Permissions: `Contents: Read-only` and `Actions: Read-only` (only needed to check CI). Add
+  `Pull requests: Read and write` if any repository uses the `github` notification channel (`Metadata: Read-only` is
+  added automatically).
+
+Pull request comments are posted as the user who owns the token. That is why a dedicated bot user (a regular GitHub
+account created for automation, e.g. `myorg-deploy`) is better than your own account: the comments don't look like
+yours, and the token doesn't depend on a person staying in the organization.
 
 A fine-grained token covers repositories of a single owner. If this server deploys private repositories from different
 owners, use a classic token or a bot user with access to all of them: Dokku keeps a single credential for
