@@ -87,8 +87,8 @@ def _config_show(path: Path) -> int:
 def _poll(path: Path, force_apps: list[str]) -> int:
     from dokku_auto_deploy.config import load_config
     from dokku_auto_deploy.github import DEFAULT_API as GITHUB_API
-    from dokku_auto_deploy.notify import TELEGRAM_API
     from dokku_auto_deploy.poll import poll
+    from dokku_auto_deploy.telegram import DEFAULT_API as TELEGRAM_API
 
     config = load_config(path)
     if not config.targets:

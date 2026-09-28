@@ -20,7 +20,8 @@ from dokku_auto_deploy import dokku
 from dokku_auto_deploy.config import Config, Target
 from dokku_auto_deploy.github import DEFAULT_API as GITHUB_API
 from dokku_auto_deploy.github import GitHub
-from dokku_auto_deploy.notify import TELEGRAM_API, DeployResult, notify
+from dokku_auto_deploy.notify import DeployResult, notify
+from dokku_auto_deploy.telegram import DEFAULT_API as TELEGRAM_API
 
 logger = logging.getLogger(__name__)
 

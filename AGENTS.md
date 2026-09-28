@@ -18,7 +18,8 @@
   reaches the terminal through the `on_output` callback. Data (build log, `config show`) goes to stdout, status to
   stderr.
 - Secrets never go in CLI arguments, config values or logs; the config only holds paths to token files. The Telegram
-  URL contains the bot token: never log a request URL or an exception that includes it (`send_telegram` shows how).
+  URL contains the bot token: never log a request URL or an exception that includes it (`Telegram.send_message`
+  shows how).
 - Config keys: a missing key and an empty string mean the same thing. A new key must be added to the `*_KEYS` tuple,
   `CONFIG_TEMPLATE` and the README config reference in the same commit.
 - Notifications are best-effort: a failing channel is reported and never changes the deploy status.

@@ -1,5 +1,3 @@
-import pytest
-
 from dokku_auto_deploy.config import Target
 from dokku_auto_deploy.notify import (
     TELEGRAM_MAX_LENGTH,
@@ -7,7 +5,6 @@ from dokku_auto_deploy.notify import (
     comment_body,
     error_tail,
     notify,
-    parse_telegram_chat,
     telegram_text,
 )
 
@@ -54,16 +51,6 @@ class TestGitHubComment:
 
 
 class TestTelegram:
-    @pytest.mark.parametrize(
-        "chat, expected",
-        [
-            pytest.param("-1003508368629_2909", ("-1003508368629", "2909"), id="group-topic"),
-            pytest.param("-1003508368629", ("-1003508368629", None), id="group"),
-        ],
-    )
-    def test_parse_chat(self, chat, expected):
-        assert parse_telegram_chat(chat) == expected
-
     def test_links_hide_urls_behind_words(self):
         text = telegram_text(make_result(prs=[PR_7]))
         assert f'<a href="https://github.com/Org/proj/commit/{SHA}">commit</a>' in text

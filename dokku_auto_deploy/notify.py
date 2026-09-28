@@ -2,19 +2,15 @@
 
 import dataclasses
 import html
-import json
 import re
-import urllib.error
-import urllib.parse
-import urllib.request
 from typing import Any
 
 from dokku_auto_deploy.config import Target
 from dokku_auto_deploy.github import DEFAULT_API as GITHUB_API
 from dokku_auto_deploy.github import GitHub
+from dokku_auto_deploy.telegram import DEFAULT_API as TELEGRAM_API
+from dokku_auto_deploy.telegram import Telegram
 
-TELEGRAM_API = "https://api.telegram.org"
-TELEGRAM_TIMEOUT = 10
 TELEGRAM_MAX_LENGTH = 4096
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
@@ -46,12 +42,6 @@ def comment_body(result: DeployResult) -> str:
     )
 
 
-def parse_telegram_chat(chat: str) -> tuple[str, str | None]:
-    """`-100123_45` -> ("-100123", "45") for a topic in a group; `-100123` -> ("-100123", None)."""
-    chat_id, _, thread_id = chat.partition("_")
-    return chat_id, thread_id or None
-
-
 def telegram_text(result: DeployResult) -> str:
     """Message for `parse_mode=HTML`: URLs stay behind words, and the log is cut (from the start) to fit the limit."""
     target, sha = result.target, result.sha
@@ -77,27 +67,6 @@ def telegram_text(result: DeployResult) -> str:
     return text
 
 
-def send_telegram(token: str, chat: str, text: str, api: str = TELEGRAM_API) -> None:
-    """Send `text` (HTML) to `chat`; raises `RuntimeError` with Telegram's description, never with the token."""
-    chat_id, thread_id = parse_telegram_chat(chat)
-    fields = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
-    if thread_id:
-        fields["message_thread_id"] = thread_id
-    data = urllib.parse.urlencode(fields).encode()
-    request = urllib.request.Request(f"{api.rstrip('/')}/bot{token}/sendMessage", data=data, method="POST")
-    try:
-        with urllib.request.urlopen(request, timeout=TELEGRAM_TIMEOUT):
-            pass
-    except urllib.error.HTTPError as exc:
-        try:
-            description = json.load(exc).get("description", "")
-        except ValueError:
-            description = ""
-        raise RuntimeError(f"Telegram API returned HTTP {exc.code}: {description or exc.reason}") from None
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"could not reach Telegram API: {exc.reason}") from None
-
-
 def notify(
     result: DeployResult,
     github_token: str,
@@ -120,7 +89,8 @@ def notify(
             elif channel == "telegram":
                 if not telegram_token:
                     raise RuntimeError("no Telegram bot token (see telegram-token-file in [settings])")
-                send_telegram(telegram_token, result.target.telegram_chat, telegram_text(result), telegram_api)
+                telegram = Telegram(telegram_token, telegram_api)
+                telegram.send_message(result.target.telegram_chat, telegram_text(result))
         except (RuntimeError, OSError, KeyError, ValueError) as exc:
             failures.append(f"{channel}: {exc}")
     return failures
