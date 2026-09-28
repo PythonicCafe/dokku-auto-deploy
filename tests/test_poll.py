@@ -39,6 +39,17 @@ class TestDecide:
     def test_decide(self, head, runs, state, expected):
         assert decide(head, runs, state, WORKFLOW) == expected
 
+    @pytest.mark.parametrize(
+        "state, expected",
+        [
+            pytest.param(None, "deploy", id="first"),
+            pytest.param({"sha": "old", "status": "deployed"}, "deploy", id="new-sha"),
+            pytest.param({"sha": "new", "status": "deployed"}, "skip", id="same-sha"),
+        ],
+    )
+    def test_empty_workflow_ignores_ci(self, state, expected):
+        assert decide("new", [run(conclusion="failure")], state, "") == expected
+
 
 def pr(number, merge_sha, merged=True):
     return {
@@ -55,14 +66,14 @@ def test_select_merged_prs_in_range():
     assert [item["number"] for item in select_merged_prs(pulls, {"a", "b"})] == [1, 2]
 
 
-def make_config(tmp_path, notify='["github", "telegram"]'):
+def make_config(tmp_path, notify='["github", "telegram"]', workflow=WORKFLOW):
     return parse_config(
         {
             "settings": {"state-file": str(tmp_path / "state.json")},
             "repo": [
                 {
                     "repository": "Org/proj",
-                    "workflow": WORKFLOW,
+                    "workflow": workflow,
                     "notify": json.loads(notify),
                     "telegram-chat": "-100_9",
                     "stg": {},
@@ -115,6 +126,14 @@ class TestPoll:
         assert b"".join(output) == b"-----> Building\n"
         assert (read_state(tmp_path)["status"], read_state(tmp_path)["deployed_sha"]) == ("deployed", "c3")
         assert [path for path, _ in fake_api.posts()] == ["/repos/Org/proj/issues/10/comments", "/botTG/sendMessage"]
+
+    def test_empty_workflow_deploys_without_asking_for_ci_runs(self, tmp_path, fake_api, fake_dokku):
+        github_state(fake_api, runs=[run(status="in_progress", conclusion=None)])
+        fake_dokku.set()
+        write_state(tmp_path, sha="c1", status="deployed", deployed_sha="c1")
+        assert do_poll(make_config(tmp_path, notify="[]", workflow=""), fake_api) == 0
+        assert fake_dokku.syncs == ["git:sync --build proj-stg https://github.com/Org/proj.git c3"]
+        assert not [path for _, path, _, _ in fake_api.requests if path.endswith("/actions/runs")]
 
     def test_waits_while_ci_runs(self, tmp_path, fake_api, fake_dokku):
         github_state(fake_api, runs=[run(status="in_progress", conclusion=None)])

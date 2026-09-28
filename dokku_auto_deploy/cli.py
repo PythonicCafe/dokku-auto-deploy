@@ -79,7 +79,7 @@ def _config_show(path: Path) -> int:
         )
         print(
             f"{target.repository} {target.branch} -> {target.app} "
-            f"(workflow: {target.workflow}, notify: {channels or '-'})"
+            f"(workflow: {target.workflow or 'none, no CI wait'}, notify: {channels or '-'})"
         )
     return EXIT_OK
 

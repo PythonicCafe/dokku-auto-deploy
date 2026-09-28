@@ -56,7 +56,7 @@ class TestEnvironments:
 
 
 class TestDefaults:
-    def test_workflow_and_telegram_chat_come_from_defaults_when_blank_or_missing(self):
+    def test_workflow_and_telegram_chat_are_inherited_only_when_missing(self):
         config = parse(
             f"""
             [defaults]
@@ -70,16 +70,32 @@ class TestDefaults:
 
             [[repo]]
             repository = "Org/b"
-            workflow = ""
+            workflow = ".github/workflows/other.yml"
             telegram-chat = "-200"
             notify = ["telegram"]
+            prd = {{}}
+
+            [[repo]]
+            repository = "Org/c"
+            workflow = ""
             prd = {{}}
             """
         )
         assert [(target.workflow, target.telegram_chat) for target in config.targets] == [
             (WORKFLOW, "-100_7"),
-            (WORKFLOW, "-200"),
+            (".github/workflows/other.yml", "-200"),
+            ("", "-100_7"),
         ]
+
+    def test_empty_workflow_in_defaults_disables_ci_wait_for_repos_that_do_not_set_it(self):
+        config = parse('[defaults]\nworkflow = ""\n[[repo]]\nrepository = "Org/a"\nprd = {}\n')
+        assert config.targets[0].workflow == ""
+
+    def test_empty_telegram_chat_does_not_inherit(self):
+        text = '[defaults]\nworkflow = ""\ntelegram-chat = "-100"\n'
+        text += '[[repo]]\nrepository = "Org/a"\nnotify = ["telegram"]\ntelegram-chat = ""\nprd = {}\n'
+        with pytest.raises(ConfigError, match="telegram-chat"):
+            parse(text)
 
     def test_notify_defaults_to_nothing(self):
         (target,) = parse(f'[[repo]]\nrepository = "Org/a"\nworkflow = "{WORKFLOW}"\nprd = {{}}\n').targets

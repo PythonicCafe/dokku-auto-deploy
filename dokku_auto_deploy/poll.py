@@ -4,6 +4,7 @@ Decision per target (see `decide`):
 - head SHA already handled (deployed, CI failed or deploy failed) -> skip. A failed deploy is not retried on its own,
   to avoid rebuilding a broken commit every cycle; `force_apps` retries it.
 - CI of that SHA (push event on that branch, configured workflow file) not finished -> wait for the next cycle.
+  With an empty workflow there is no CI to wait for.
 - CI failed -> recorded, nothing deployed, nobody notified (GitHub already shows the red CI).
 - CI passed -> `dokku git:sync --build` of that exact SHA, unless the app is locked (manual deploy or `apps:lock`).
 """
@@ -30,9 +31,14 @@ OutputCallback = Callable[[bytes], object]
 
 
 def decide(head_sha: str, runs: list[dict[str, Any]], state: dict[str, Any] | None, workflow: str) -> Action:
-    """What to do with `head_sha`. Only the latest run of `workflow` counts, so a successful re-run wins."""
+    """What to do with `head_sha`. Only the latest run of `workflow` counts, so a successful re-run wins.
+
+    An empty `workflow` means the repository has no CI to wait for: every new head is deployed.
+    """
     if state is not None and state.get("sha") == head_sha:
         return "skip"
+    if not workflow:
+        return "deploy"
     matching = [run for run in runs if run.get("path") == workflow]
     if not matching:
         return "wait"
@@ -90,7 +96,8 @@ def process_target(
     sha = github.branch_head(target.repository, branch)
     last_deployed = state.get(app, {}).get("deployed_sha")
     current = None if force else state.get(app)
-    action = decide(sha, github.push_runs(target.repository, branch, sha), current, target.workflow)
+    runs = github.push_runs(target.repository, branch, sha) if target.workflow else []
+    action = decide(sha, runs, current, target.workflow)
     if action == "skip":
         return
     if action == "wait":

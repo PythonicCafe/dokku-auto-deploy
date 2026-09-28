@@ -13,7 +13,8 @@ repository can have only one of them, and branches and app names are configurabl
 Features:
 
 - No inbound port and no secret stored on GitHub: the server pulls.
-- Deploys only the exact commit whose CI succeeded; a newer push waits for its own CI.
+- Deploys only the exact commit whose CI succeeded; a newer push waits for its own CI. Repositories without CI can
+  opt out (`workflow = ""`).
 - Respects Dokku's deploy lock: never starts while another deploy (e.g. a manual `git push dokku`) runs or while the
   app is locked with `dokku apps:lock`.
 - A failed deploy is reported once and not retried in a loop; `poll --force <app>` retries it.
@@ -28,7 +29,8 @@ For each target (a repository environment: `develop` -> `myproject-stg`, `main` 
 1. Reads the branch head commit (`GET /repos/{owner}/{repo}/branches/{branch}`).
 2. If that commit was already handled, does nothing.
 3. Looks for the runs of the configured workflow file for that commit, triggered by a push to that branch. If there is
-   none yet or it is still running, waits for the next run. If it failed, records it and does nothing else.
+   none yet or it is still running, waits for the next run. If it failed, records it and does nothing else. With
+   `workflow = ""` this step is skipped and every new commit is deployed.
 4. If the app is locked in Dokku, waits for the next run.
 5. Runs `dokku git:sync --build <app> https://github.com/<owner>/<repo>.git <sha>`, streaming the build log to the
    journal.
@@ -42,7 +44,8 @@ State is kept in a small JSON file (`/var/lib/dokku-auto-deploy/state.json` by d
 
 - A Dokku server with `git:sync` (Dokku 0.23+) and `apps:locked`.
 - Python 3.11+ on the host (Debian 12+, Ubuntu 24.04+).
-- A GitHub Actions workflow that runs on pushes to the deployed branches (see "GitHub Actions workflow").
+- A GitHub Actions workflow that runs on pushes to the deployed branches (see "GitHub Actions workflow"), unless the
+  repository is configured with `workflow = ""` (no CI).
 
 ## Installation
 
@@ -76,7 +79,7 @@ preferably for a bot user of your organization:
 
 - Resource owner: the organization (or user) that owns the repositories.
 - Repository access: only the repositories deployed by this server.
-- Permissions: `Contents: Read-only` and `Actions: Read-only`. Add `Pull requests: Read and write` if any repository
+- Permissions: `Contents: Read-only` and `Actions: Read-only` (only needed to check CI). Add `Pull requests: Read and write` if any repository
   uses the `github` notification channel (`Metadata: Read-only` is added automatically).
 
 A fine-grained token covers repositories of a single owner. If this server deploys private repositories from different
@@ -146,15 +149,17 @@ PythonicCafe/myproject main -> myproject-prd (workflow: .github/workflows/django
 PythonicCafe/website main -> site-production (workflow: .github/workflows/ci.yml, notify: telegram -1009876543210)
 ```
 
-Rules: keys can be written in kebab-case (`state-file`) or snake_case (`state_file`); a missing key and an empty
-string (`""`) mean the same thing, "use the default"; unknown sections or keys are errors.
+Rules: keys can be written in kebab-case (`state-file`) or snake_case (`state_file`); unknown sections or keys are
+errors. `workflow` and `telegram-chat` can be set in `[defaults]`: a `[[repo]]` that doesn't set them inherits them,
+and a value set in the repo wins, even an empty one. For every other key, an empty string (`""`) is the same as leaving
+it out: the built-in default applies.
 
 | Key | Where | Default | Meaning |
 |---|---|---|---|
 | `state-file` | `[settings]` | `/var/lib/dokku-auto-deploy/state.json` | Where the tool records what it handled |
 | `github-token-file` | `[settings]` | `/etc/dokku-auto-deploy/github-token` | File with the GitHub token |
 | `telegram-token-file` | `[settings]` | `/etc/dokku-auto-deploy/telegram-token` | File with the Telegram bot token (read only if a repo uses `telegram`) |
-| `workflow` | `[defaults]`, `[[repo]]` | none (required in one of them) | Workflow file whose run must succeed, e.g. `.github/workflows/ci.yml` |
+| `workflow` | `[defaults]`, `[[repo]]` | none (required in one of them) | Workflow file whose run must succeed, e.g. `.github/workflows/ci.yml`; `""` deploys every new commit without waiting for CI |
 | `telegram-chat` | `[defaults]`, `[[repo]]` | none (required when `notify` has `telegram`) | Group id (`-100...`), or group id `_` topic id |
 | `repository` | `[[repo]]` | required | `owner/name` on GitHub |
 | `name` | `[[repo]]` | repository name | Base for app names |
@@ -163,8 +168,7 @@ string (`""`) mean the same thing, "use the default"; unknown sections or keys a
 | `app` | `stg`/`prd` table | `<name>-stg`, `<name>-prd` | Dokku app to deploy |
 | `branch` | `stg`/`prd` table | `develop` (stg), `main` (prd) | Branch to follow |
 
-`[defaults]` values apply to repositories that leave the same key empty or missing. `notify` has no default: each
-repository opts in.
+`notify` has no default: each repository opts in.
 
 ### 4. Telegram (optional)
 
@@ -270,8 +274,8 @@ build does not print secrets.
 
 ## GitHub Actions workflow
 
-The tool only needs a workflow that runs on pushes to the deployed branches. With the gitflow described here, the
-workflow also runs on pull requests:
+For repositories that wait for CI, the tool only needs a workflow that runs on pushes to the deployed branches. With
+the gitflow described here, the workflow also runs on pull requests:
 
 ```yaml
 on:

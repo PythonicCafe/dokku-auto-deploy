@@ -20,7 +20,8 @@
 - Secrets never go in CLI arguments, config values or logs; the config only holds paths to token files. The Telegram
   URL contains the bot token: never log a request URL or an exception that includes it (`Telegram.send_message`
   shows how).
-- Config keys: a missing key and an empty string mean the same thing. A new key must be added to the `*_KEYS` tuple,
+- Config keys: keys also in `[defaults]` are inherited only when the repo doesn't set them (`workflow = ""` means no
+  CI); for the others, an empty string means the built-in default. A new key must be added to the `*_KEYS` tuple,
   `CONFIG_TEMPLATE` and the README config reference in the same commit.
 - Notifications are best-effort: a failing channel is reported and never changes the deploy status.
 - User-facing text (CLI, logs, GitHub comments, Telegram) is in English.

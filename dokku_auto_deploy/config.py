@@ -1,8 +1,11 @@
 """Config file (TOML): loading, validation and the commented template written by `config init`.
 
-Every key may be written in kebab-case (`state-file`, as documented) or snake_case, but not both at once. A key that
-is absent and a key set to an empty string mean the same thing: "use the default". Unknown sections and keys are
-rejected, so a typo never silently falls back to a default.
+Every key may be written in kebab-case (`state-file`, as documented) or snake_case, but not both at once. Unknown
+sections and keys are rejected, so a typo never silently falls back to a default.
+
+Keys that exist in [defaults] (`workflow`, `telegram-chat`) are inherited only when a [[repo]] doesn't set them: a
+value set in the repo, even an empty string, wins. An empty `workflow` means "don't wait for CI". For every other key
+an empty string means the same as leaving it out: use the built-in default.
 """
 
 import dataclasses
@@ -76,6 +79,15 @@ def _string(table: dict[str, Any], key: str, where: str) -> str:
     return value.strip()
 
 
+def _inherited(table: dict[str, Any], defaults: dict[str, Any], key: str, where: str) -> str | None:
+    """Value of `key` from the repo table, else from [defaults]; None if neither sets it."""
+    if key in table:
+        return _string(table, key, where)
+    if key in defaults:
+        return _string(defaults, key, "[defaults]")
+    return None
+
+
 def _notify(table: dict[str, Any], where: str) -> tuple[str, ...]:
     value = table.get("notify", [])
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
@@ -95,11 +107,11 @@ def _repo_targets(entry: Any, index: int, defaults: dict[str, Any]) -> list[Targ
     if not owner or not name or "/" in name:
         raise ConfigError(f"{where}: repository must be owner/name, got {repository!r}")
     where = f"[[repo]] {repository}"
-    workflow = _string(table, "workflow", where) or _string(defaults, "workflow", "[defaults]")
-    if not workflow:
-        raise ConfigError(f"{where}: missing workflow (set it here or in [defaults])")
+    workflow = _inherited(table, defaults, "workflow", where)
+    if workflow is None:
+        raise ConfigError(f'{where}: missing workflow (set it here or in [defaults]; workflow = "" deploys without CI)')
     notify = _notify(table, where)
-    telegram_chat = _string(table, "telegram_chat", where) or _string(defaults, "telegram_chat", "[defaults]")
+    telegram_chat = _inherited(table, defaults, "telegram_chat", where) or ""
     if "telegram" in notify and not telegram_chat:
         raise ConfigError(f"{where}: notify has telegram but no telegram-chat (set it here or in [defaults])")
     base_name = _string(table, "name", where) or name
@@ -171,8 +183,9 @@ CONFIG_TEMPLATE = """\
 # telegram-token-file = "/etc/dokku-auto-deploy/telegram-token"
 
 [defaults]
-## Used by every [[repo]] that leaves the same key empty or missing.
-# workflow = ".github/workflows/django.yml"  # CI workflow file whose run must succeed before deploying
+## Used by every [[repo]] that doesn't set the same key (a key set in the repo wins, even if empty).
+# workflow = ".github/workflows/django.yml"  # CI workflow file whose run must succeed before deploying;
+                                             # "" deploys every new commit without waiting for CI
 # telegram-chat = "-1001234567890_42"        # Group id, or group id + "_" + topic id
 
 ## One [[repo]] per GitHub repository. Each environment table present (stg, prd) becomes a deploy target:

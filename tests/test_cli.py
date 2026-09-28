@@ -51,6 +51,12 @@ class TestConfigCommand:
             "Org/proj main -> proj-producao (workflow: .github/workflows/ci.yml, notify: -)",
         ]
 
+    def test_show_marks_repos_without_ci(self, tmp_path, capsys):
+        path = tmp_path / "config.toml"
+        path.write_text('[[repo]]\nrepository = "Org/site"\nworkflow = ""\nprd = {}\n')
+        assert main(["-c", str(path), "config", "show"]) == 0
+        assert capsys.readouterr().out == "Org/site main -> site-prd (workflow: none, no CI wait, notify: -)\n"
+
     def test_show_with_invalid_config_exits_3(self, tmp_path, capsys):
         path = tmp_path / "config.toml"
         path.write_text('[[repo]]\nrepository = "x"\n')
