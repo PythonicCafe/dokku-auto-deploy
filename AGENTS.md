@@ -48,4 +48,9 @@
   `main` or `develop`.
 - Commit titles in English, present tense ("Adds", "Fixes"), names in backticks.
 
+## References
+
+- Why things are the way they are (pull vs push, Dokku lock behavior, config inheritance): `docs/design-decisions.md`.
+  Update it when you make or discover a design decision.
+
 If during a session you find a wrong assumption in this file, suggest the fix.

@@ -22,6 +22,8 @@ Features:
   failure they include the end of the build log.
 - Only the Python standard library (3.11+).
 
+The reasons behind these choices are in [`docs/design-decisions.md`](docs/design-decisions.md).
+
 ## How it works
 
 For each target (a repository environment: `develop` -> `myproject-stg`, `main` -> `myproject-prd`), every run:
