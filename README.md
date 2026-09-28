@@ -21,7 +21,6 @@ Features:
   failure they include the end of the build log.
 - Only the Python standard library (3.11+).
 
-
 ## How it works
 
 For each target (a repository environment: `develop` -> `myproject-stg`, `main` -> `myproject-prd`), every run:
@@ -43,7 +42,7 @@ State is kept in a small JSON file (`/var/lib/dokku-auto-deploy/state.json` by d
 
 - A Dokku server with `git:sync` (Dokku 0.23+) and `apps:locked`.
 - Python 3.11+ on the host (Debian 12+, Ubuntu 24.04+).
-- A GitHub Actions workflow that runs on pushes to the deployed branches (see "Recommended GitHub setup").
+- A GitHub Actions workflow that runs on pushes to the deployed branches (see "GitHub Actions workflow").
 
 ## Installation
 
@@ -269,7 +268,7 @@ after a crash), release it with `dokku apps:unlock <app>`.
 Failure comments include the last lines of the build log. On public repositories anyone can read them: make sure your
 build does not print secrets.
 
-## Recommended GitHub setup
+## GitHub Actions workflow
 
 The tool only needs a workflow that runs on pushes to the deployed branches. With the gitflow described here, the
 workflow also runs on pull requests:
@@ -281,22 +280,6 @@ on:
   pull_request:
     branches: [develop, main]
 ```
-
-To make `develop` and `main` reachable only through pull requests with green CI, and mergeable only by a team, apply
-the two rulesets in [`contrib/github/`](contrib/github/) (organization repositories; private repositories need a paid
-plan for rulesets). Replace `test` in `ruleset-require-pr-and-ci.json` with your CI job name:
-
-```sh
-ORG=PythonicCafe REPO=myproject
-TEAM_ID=$(gh api "orgs/$ORG/teams/core" --jq .id)
-gh api -X POST "repos/$ORG/$REPO/rulesets" --input contrib/github/ruleset-require-pr-and-ci.json
-jq --argjson id "$TEAM_ID" '.bypass_actors[0].actor_id = $id' contrib/github/ruleset-restrict-merge-to-team.json \
-  | gh api -X POST "repos/$ORG/$REPO/rulesets" --input -
-```
-
-The first requires a pull request and the CI check for everybody (no bypass). The second lets only the team update
-the branches, which includes merging pull requests. They are separate because a bypass applies to a whole ruleset.
-
 
 ## Command reference
 
