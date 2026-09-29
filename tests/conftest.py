@@ -2,6 +2,7 @@ import json
 import os
 import stat
 import threading
+import time
 import urllib.parse
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -15,12 +16,14 @@ class FakeAPI:
     """In-process HTTP server standing in for both GitHub and Telegram APIs.
 
     `routes` maps "METHOD /path" (no query string) to a (status, JSON body) pair; every request is recorded in
-    `requests` as (method, path, query, body) so tests can assert on what was sent.
+    `requests` as (method, path, query, body) so tests can assert on what was sent. `response_delay` (seconds) makes
+    every answer slow, to exercise client timeouts.
     """
 
     def __init__(self) -> None:
         self.routes: dict[str, tuple[int, Any]] = {}
         self.requests: list[tuple[str, str, dict[str, str], Any]] = []
+        self.response_delay = 0.0
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
 
@@ -40,6 +43,7 @@ class FakeAPI:
                 else:
                     body = dict(urllib.parse.parse_qsl(raw.decode()))
                 api.requests.append((method, parsed.path, query, body))
+                time.sleep(api.response_delay)
                 status, payload = api.routes.get(f"{method} {parsed.path}", (404, {"message": "Not Found"}))
                 data = json.dumps(payload).encode()
                 self.send_response(status)

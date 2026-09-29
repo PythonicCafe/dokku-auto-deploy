@@ -34,6 +34,14 @@ class TestSendMessage:
             Telegram("TOKEN", fake_api.url).send_message("-100", "hi")
         assert "chat not found" in str(exc.value) and "TOKEN" not in str(exc.value)
 
+    def test_slow_api_raises_telegram_error(self, fake_api, monkeypatch):
+        monkeypatch.setattr("dokku_auto_deploy.telegram.HTTP_TIMEOUT", 0.2)
+        fake_api.routes["POST /botTOKEN/sendMessage"] = (200, {"ok": True})
+        fake_api.response_delay = 1
+        with pytest.raises(TelegramError, match="did not answer in 0.2s") as exc:
+            Telegram("TOKEN", fake_api.url).send_message("-100", "hi")
+        assert "TOKEN" not in str(exc.value)
+
     def test_unreachable_api_never_shows_the_token(self):
         with pytest.raises(TelegramError) as exc:
             Telegram("TOKEN", "http://127.0.0.1:9").send_message("-100", "hi")

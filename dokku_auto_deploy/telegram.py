@@ -6,7 +6,9 @@ import urllib.parse
 import urllib.request
 
 DEFAULT_API = "https://api.telegram.org"
-HTTP_TIMEOUT = 10
+# Answers usually take <1s, but some sendMessage calls took ~10s (seen 2026-09 with an invalid chat id; cause not
+# found: not DNS, not a dead address). One call per deploy, so a generous timeout costs nothing.
+HTTP_TIMEOUT = 30
 
 
 class TelegramError(RuntimeError):
@@ -48,3 +50,5 @@ class Telegram:
             raise TelegramError(f"Telegram API returned HTTP {exc.code}: {description or exc.reason}") from None
         except urllib.error.URLError as exc:
             raise TelegramError(f"could not reach Telegram API: {exc.reason}") from None
+        except TimeoutError:
+            raise TelegramError(f"Telegram API did not answer in {HTTP_TIMEOUT}s") from None

@@ -71,8 +71,10 @@ next successful one. Without `deployed_sha`, or if the comparison fails (rewritt
 Redeploying the same SHA with `--force` comments on no PR (none is new) but still sends Telegram messages.
 
 Notification channels are best-effort and independent: a failure is logged and never changes the deploy status or the
-other channels. Telegram is sent synchronously with a 10s timeout so failures reach the log; HTML messages keep URLs
-behind words and cut the build log from its start (errors are at the end) to fit the 4096-character limit.
+other channels. Telegram is sent synchronously so failures reach the log, with a 30s timeout: answers usually take under
+1s, but some calls took about 10s (seen in 2026-09 with an invalid chat id, cause not identified), which a 10s timeout
+turned into a generic error. HTML messages keep URLs behind words and cut the build log from its start (errors are at
+the end) to fit the 4096-character limit.
 
 ## Configuration
 
