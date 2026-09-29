@@ -44,6 +44,11 @@ def create_parser() -> argparse.ArgumentParser:
         "can be repeated",
     )
 
+    commands.add_parser(
+        "notify-test",
+        help="Send a test Telegram message to every configured telegram-chat (GitHub comments need a real PR)",
+    )
+
     config = commands.add_parser("config", help="Create or inspect the config file")
     config_commands = config.add_subparsers(dest="config_command", metavar="action", required=True)
     init = config_commands.add_parser("init", help="Write a commented config template to the config path")
@@ -128,6 +133,30 @@ def _poll(path: Path, force_apps: list[str]) -> int:
     return EXIT_ERROR if errors else EXIT_OK
 
 
+def _notify_test(path: Path) -> int:
+    from dokku_auto_deploy.config import load_config
+    from dokku_auto_deploy.notify import send_test_messages
+    from dokku_auto_deploy.telegram import DEFAULT_API as TELEGRAM_API
+
+    config = load_config(path)
+    if not any("telegram" in target.notify for target in config.targets):
+        print(f'Error: no [[repo]] in {path} has "telegram" in notify', file=sys.stderr)
+        return EXIT_CONFIG
+    telegram_token = _read_secret(config.settings.telegram_token_file)
+    if telegram_token is None:
+        print(f"Error: Telegram token file missing or empty: {config.settings.telegram_token_file}", file=sys.stderr)
+        return EXIT_CONFIG
+    api = os.environ.get("DOKKU_AUTO_DEPLOY_TELEGRAM_API", TELEGRAM_API)
+    failed = False
+    for chat, apps, error in send_test_messages(config.targets, telegram_token, api):
+        if error is None:
+            print(f"ok {chat} ({', '.join(apps)})")
+        else:
+            failed = True
+            print(f"failed {chat} ({', '.join(apps)}): {error}", file=sys.stderr)
+    return EXIT_ERROR if failed else EXIT_OK
+
+
 def main(argv: list[str] | None = None) -> int:
     from dokku_auto_deploy.config import ConfigError
 
@@ -141,6 +170,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "poll":
             return _poll(args.config, args.force)
+        if args.command == "notify-test":
+            return _notify_test(args.config)
         if args.config_command == "init":
             return _config_init(args.config, args.force)
         return _config_show(args.config)

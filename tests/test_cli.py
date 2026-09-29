@@ -94,3 +94,52 @@ class TestPollCommand:
             "git:sync --build proj-producao https://github.com/Org/proj.git m1",
         ]
         assert capsysbinary.readouterr().out == b"-----> built\n" * 2
+
+
+TELEGRAM_CONFIG = """
+[settings]
+state-file = "{state}"
+github-token-file = "{token}"
+telegram-token-file = "{token}"
+
+[defaults]
+workflow = ""
+telegram-chat = "-100_7"
+
+[[repo]]
+repository = "Org/a"
+notify = ["telegram"]
+stg = {{}}
+prd = {{}}
+
+[[repo]]
+repository = "Org/b"
+notify = ["telegram"]
+telegram-chat = "-200"
+prd = {{}}
+
+[[repo]]
+repository = "Org/c"
+notify = ["github"]
+prd = {{}}
+"""
+
+
+class TestNotifyTestCommand:
+    def test_sends_one_message_per_chat_listing_its_apps(self, tmp_path, fake_api, monkeypatch, capsys):
+        monkeypatch.setenv("DOKKU_AUTO_DEPLOY_TELEGRAM_API", fake_api.url)
+        fake_api.routes["POST /botGH/sendMessage"] = (200, {"ok": True})
+        assert main(["-c", str(write_config(tmp_path, TELEGRAM_CONFIG)), "notify-test"]) == 0
+        sent = {body["chat_id"] + "_" + body.get("message_thread_id", ""): body["text"] for _, body in fake_api.posts()}
+        assert set(sent) == {"-100_7", "-200_"}
+        assert "a-stg" in sent["-100_7"] and "a-prd" in sent["-100_7"] and "b-prd" not in sent["-100_7"]
+        assert capsys.readouterr().out.splitlines() == ["ok -100_7 (a-stg, a-prd)", "ok -200 (b-prd)"]
+
+    def test_failed_chat_exits_1_and_says_why(self, tmp_path, fake_api, monkeypatch, capsys):
+        monkeypatch.setenv("DOKKU_AUTO_DEPLOY_TELEGRAM_API", fake_api.url)
+        assert main(["-c", str(write_config(tmp_path, TELEGRAM_CONFIG)), "notify-test"]) == 1
+        assert "Telegram API returned HTTP 404" in capsys.readouterr().err
+
+    def test_without_telegram_targets_exits_3(self, tmp_path, capsys):
+        assert main(["-c", str(write_config(tmp_path)), "notify-test"]) == 3
+        assert "telegram" in capsys.readouterr().err

@@ -190,6 +190,12 @@ it out: the built-in default applies.
    `https://t.me/c/1234567890/42/100` means group `-1001234567890`, topic `42`, so
    `telegram-chat = "-1001234567890_42"`; a link without topic (`https://t.me/c/1234567890/100`) means
    `telegram-chat = "-1001234567890"`.
+4. After adding `"telegram"` to `notify` and the chat to the config, check it end to end:
+   ```sh
+   dokku-auto-deploy notify-test
+   ```
+   It sends one test message to each configured chat, listing the apps reported there, and prints `ok <chat> (apps)`
+   or the Telegram error for each one.
 
 Messages are HTML: the commit and pull request links sit behind the words "commit" and "#number".
 
@@ -299,6 +305,7 @@ on:
 ```text
 dokku-auto-deploy [-c path] [-v] poll [-f app ...]    check every target once and deploy what passed CI
 dokku-auto-deploy [-c path] config init [--force]     write the commented config template
+dokku-auto-deploy [-c path] notify-test               send a test Telegram message to every configured chat
 dokku-auto-deploy [-c path] config show               validate the config and print the resolved targets
 ```
 

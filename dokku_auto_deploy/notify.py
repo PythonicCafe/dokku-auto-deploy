@@ -4,6 +4,8 @@ import dataclasses
 import html
 import logging
 import re
+import socket
+from collections.abc import Iterable
 from typing import Any
 
 from dokku_auto_deploy.config import Target
@@ -102,3 +104,30 @@ def notify(
         except (RuntimeError, OSError, KeyError, ValueError) as exc:
             failures.append(f"{channel}: {exc}")
     return failures
+
+
+def telegram_chats(targets: Iterable[Target]) -> dict[str, list[str]]:
+    """Apps reported to each Telegram chat, in config order (only targets with the telegram channel)."""
+    chats: dict[str, list[str]] = {}
+    for target in targets:
+        if "telegram" in target.notify:
+            chats.setdefault(target.telegram_chat, []).append(target.app)
+    return chats
+
+
+def send_test_messages(
+    targets: Iterable[Target], telegram_token: str, telegram_api: str = TELEGRAM_API
+) -> list[tuple[str, list[str], str | None]]:
+    """Send one test message to each configured Telegram chat; returns (chat, apps, error or None) per chat."""
+    telegram = Telegram(telegram_token, telegram_api)
+    host = html.escape(socket.gethostname())
+    results: list[tuple[str, list[str], str | None]] = []
+    for chat, apps in telegram_chats(targets).items():
+        names = ", ".join(f"<code>{html.escape(app)}</code>" for app in apps)
+        text = f"dokku-auto-deploy test from <b>{host}</b>: deploys of {names} will be reported here."
+        try:
+            telegram.send_message(chat, text)
+            results.append((chat, apps, None))
+        except (RuntimeError, OSError) as exc:
+            results.append((chat, apps, str(exc)))
+    return results
