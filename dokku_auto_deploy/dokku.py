@@ -43,6 +43,19 @@ def is_locked(app: str) -> bool:
     return result.returncode == 0
 
 
+def deployed_rev(app: str) -> str | None:
+    """Commit the app was last built from, per the `GIT_REV` config var Dokku sets on every git deploy; None if unset.
+
+    Dokku sets it right before building, so after a failed build it names the commit that failed; callers only use it
+    to skip rebuilding a commit that is already there. Apps with `git:set <app> rev-env-var ""` have no GIT_REV.
+    """
+    result = subprocess.run(
+        ["dokku", "config:get", app, "GIT_REV"], capture_output=True, text=True, check=False, timeout=LOCK_CHECK_TIMEOUT
+    )
+    rev = result.stdout.strip()
+    return rev if result.returncode == 0 and rev else None
+
+
 def git_sync(
     app: str, repository: str, sha: str, on_output: Callable[[bytes], object] | None = None
 ) -> tuple[bool, str]:

@@ -6,7 +6,9 @@ Decision per target (see `decide`):
 - CI of that SHA (push event on that branch, configured workflow file) not finished -> wait for the next cycle.
   With an empty workflow there is no CI to wait for.
 - CI failed -> recorded, nothing deployed, nobody notified (GitHub already shows the red CI).
-- CI passed -> `dokku git:sync --build` of that exact SHA, unless the app is locked (manual deploy or `apps:lock`).
+- CI passed -> `dokku git:sync --build` of that exact SHA, unless the app is locked (manual deploy or `apps:lock`),
+  or Dokku already runs it (`GIT_REV`): then it is only recorded, so a first run or a lost state file doesn't rebuild
+  apps that are up to date. `force_apps` rebuilds anyway.
 """
 
 import datetime
@@ -106,6 +108,10 @@ def process_target(
     if action == "ci_failed":
         logger.info("[%s] %s@%s: CI failed, not deploying", app, branch, sha[:8])
         status = "ci_failed"
+    elif not force and dokku.deployed_rev(app) == sha:
+        logger.info("[%s] %s@%s: app already runs this commit, recorded without rebuilding", app, branch, sha[:8])
+        status = "deployed"
+        last_deployed = sha
     else:
         if dokku.is_locked(app):
             logger.info("[%s] %s@%s: app locked (deploy in progress or apps:lock), waiting", app, branch, sha[:8])

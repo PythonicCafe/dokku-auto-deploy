@@ -33,7 +33,8 @@ For each target (a repository environment: `develop` -> `myproject-stg`, `main` 
 3. Looks for the runs of the configured workflow file for that commit, triggered by a push to that branch. If there is
    none yet or it is still running, waits for the next run. If it failed, records it and does nothing else. With
    `workflow = ""` this step is skipped and every new commit is deployed.
-4. If the app is locked in Dokku, waits for the next run.
+4. If Dokku already runs that commit (the app's `GIT_REV`), only records it: no rebuild, no notification. If the app
+   is locked in Dokku, waits for the next run.
 5. Runs `dokku git:sync --build <app> https://github.com/<owner>/<repo>.git <sha>`, streaming the build log to the
    journal.
 6. Records the result and notifies the configured channels. GitHub comments go to every pull request merged into the
@@ -200,7 +201,8 @@ Run it by hand once and read the output:
 dokku-auto-deploy poll
 ```
 
-The first run deploys the current head of every configured branch whose CI passed. To inspect what it recorded:
+The first run deploys the current head of every configured branch whose CI passed, except in apps that already run
+that commit (they are only recorded). To inspect what it recorded:
 `cat /var/lib/dokku-auto-deploy/state.json`.
 
 ### 6. Run it every minute (systemd)

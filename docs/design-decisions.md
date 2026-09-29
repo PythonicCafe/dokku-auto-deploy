@@ -56,6 +56,16 @@ mode, fails immediately (it does not wait) if the lock is taken, and deletes the
   logging it every cycle; `dokku apps:unlock <app>` fixes it. The tool never unlocks on its own: other tools we looked
   at do, which silently overrides manual deploys.
 
+## Commits Dokku already runs are not rebuilt
+
+Before deploying, the tool reads the app's `GIT_REV` (`dokku config:get <app> GIT_REV`), which Dokku sets on every git
+deploy (`git_build` in Dokku's `plugins/git/functions`, checked 2026-09). If it already is the branch head, the commit
+is only recorded as deployed. Without this, the first run (or a lost state file) rebuilt every app, production
+included, even when nothing changed. `GIT_REV` was preferred over `git:report --git-sha` because the latter is
+`git rev-parse HEAD` of the bare app repo, whose `HEAD` may not point to the deploy branch. Known limit: Dokku sets
+`GIT_REV` before building, so after a failed manual deploy of commit X it says X; if X then becomes the branch head,
+the tool records it without building. `poll --force <app>` rebuilds regardless.
+
 ## Failed deploys are not retried automatically
 
 A SHA whose deploy failed is recorded and left alone, so a broken commit isn't rebuilt every minute. Retrying is

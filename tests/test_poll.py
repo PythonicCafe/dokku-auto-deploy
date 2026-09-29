@@ -204,6 +204,26 @@ class TestPoll:
         do_poll(make_config(tmp_path, notify='["github"]'), fake_api)
         assert [path for path, _ in fake_api.posts()] == ["/repos/Org/proj/issues/10/comments"]
 
+    def test_commit_already_running_is_recorded_without_rebuilding(self, tmp_path, fake_api, fake_dokku):
+        github_state(fake_api)
+        fake_dokku.set(git_rev="c3")
+        assert do_poll(make_config(tmp_path), fake_api) == 0
+        assert fake_dokku.syncs == []
+        assert (read_state(tmp_path)["status"], read_state(tmp_path)["deployed_sha"]) == ("deployed", "c3")
+        assert fake_api.posts() == []
+
+    def test_force_rebuilds_even_if_commit_is_already_running(self, tmp_path, fake_api, fake_dokku):
+        github_state(fake_api)
+        fake_dokku.set(git_rev="c3")
+        do_poll(make_config(tmp_path), fake_api, force=["proj-stg"])
+        assert len(fake_dokku.syncs) == 1
+
+    def test_app_running_another_commit_is_deployed(self, tmp_path, fake_api, fake_dokku):
+        github_state(fake_api)
+        fake_dokku.set(git_rev="c1")
+        do_poll(make_config(tmp_path, notify="[]"), fake_api)
+        assert len(fake_dokku.syncs) == 1
+
     def test_api_error_counts_as_error_and_keeps_state(self, tmp_path, fake_api, fake_dokku):
         write_state(tmp_path, sha="c1", status="deployed", deployed_sha="c1")
         assert do_poll(make_config(tmp_path), fake_api) == 1

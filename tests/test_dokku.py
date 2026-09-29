@@ -1,6 +1,6 @@
 import sys
 
-from dokku_auto_deploy.dokku import git_sync, is_locked, run_streaming
+from dokku_auto_deploy.dokku import deployed_rev, git_sync, is_locked, run_streaming
 
 
 def test_run_streaming_returns_output_and_code_while_streaming():
@@ -27,3 +27,14 @@ def test_git_sync_uses_exact_sha(fake_dokku):
     fake_dokku.set(exit_code=0, output="ok\n")
     assert git_sync("app", "Org/proj", "abc") == (True, "ok\n")
     assert fake_dokku.syncs == ["git:sync --build app https://github.com/Org/proj.git abc"]
+
+
+def test_deployed_rev_reads_git_rev(fake_dokku):
+    fake_dokku.set(git_rev="abc123")
+    assert deployed_rev("app") == "abc123"
+    assert "config:get app GIT_REV" in fake_dokku.calls
+
+
+def test_deployed_rev_is_none_when_unset(fake_dokku):
+    fake_dokku.set(git_rev=None)
+    assert deployed_rev("app") is None
