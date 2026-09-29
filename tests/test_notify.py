@@ -1,3 +1,5 @@
+import logging
+
 from dokku_auto_deploy.config import Target
 from dokku_auto_deploy.notify import (
     TELEGRAM_MAX_LENGTH,
@@ -112,3 +114,23 @@ class TestNotify:
         target = make_target(notify=["telegram"], telegram_chat="-100")
         (failure,) = notify(make_result(target=target), github_token="gh", telegram_token=None)
         assert "token" in failure
+
+
+class TestNotifyLog:
+    def test_logs_each_github_comment(self, fake_api, caplog):
+        fake_api.routes["POST /repos/Org/proj/issues/7/comments"] = (201, {})
+        caplog.set_level(logging.INFO)
+        notify(make_result(prs=[PR_7], target=make_target(notify=["github"])), "gh", None, github_api=fake_api.url)
+        assert "[proj-stg] GitHub: commented on PR #7" in caplog.messages
+
+    def test_logs_why_github_did_not_comment(self, caplog):
+        caplog.set_level(logging.INFO)
+        notify(make_result(prs=[], target=make_target(notify=["github"])), "gh", None)
+        assert "[proj-stg] GitHub: no merged pull request in this deploy, nothing to comment" in caplog.messages
+
+    def test_logs_telegram_message(self, fake_api, caplog):
+        fake_api.routes["POST /botTOKEN/sendMessage"] = (200, {"ok": True})
+        caplog.set_level(logging.INFO)
+        target = make_target(notify=["telegram"], telegram_chat="-100_29")
+        notify(make_result(target=target), "gh", "TOKEN", telegram_api=fake_api.url)
+        assert "[proj-stg] Telegram: message sent to -100_29" in caplog.messages

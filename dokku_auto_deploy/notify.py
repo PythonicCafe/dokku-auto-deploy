@@ -2,6 +2,7 @@
 
 import dataclasses
 import html
+import logging
 import re
 from typing import Any
 
@@ -10,6 +11,8 @@ from dokku_auto_deploy.github import DEFAULT_API as GITHUB_API
 from dokku_auto_deploy.github import GitHub
 from dokku_auto_deploy.telegram import DEFAULT_API as TELEGRAM_API
 from dokku_auto_deploy.telegram import Telegram
+
+logger = logging.getLogger(__name__)
 
 TELEGRAM_MAX_LENGTH = 4096
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
@@ -79,18 +82,23 @@ def notify(
     A failing channel never prevents the others: notifications are best-effort and must not turn a finished deploy
     into an error.
     """
+    app = result.target.app
     failures = []
     for channel in result.target.notify:
         try:
             if channel == "github":
+                if not result.prs:
+                    logger.info("[%s] GitHub: no merged pull request in this deploy, nothing to comment", app)
                 github = GitHub(github_token, github_api)
                 for pull in result.prs:
                     github.comment(result.target.repository, pull["number"], comment_body(result))
+                    logger.info("[%s] GitHub: commented on PR #%s", app, pull["number"])
             elif channel == "telegram":
                 if not telegram_token:
                     raise RuntimeError("no Telegram bot token (see telegram-token-file in [settings])")
                 telegram = Telegram(telegram_token, telegram_api)
                 telegram.send_message(result.target.telegram_chat, telegram_text(result))
+                logger.info("[%s] Telegram: message sent to %s", app, result.target.telegram_chat)
         except (RuntimeError, OSError, KeyError, ValueError) as exc:
             failures.append(f"{channel}: {exc}")
     return failures
