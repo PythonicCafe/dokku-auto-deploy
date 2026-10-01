@@ -97,8 +97,9 @@ Install a released version (the tags are listed in the repository's releases), a
 dokku plugin:install https://github.com/PythonicCafe/dokku-auto-deploy.git --committish 0.1.0
 ```
 
-Without `--committish`, Dokku installs the repository's default branch, which may have unreleased changes: prefer a
-tag. To upgrade later, or go back to a previous version:
+The repository's default branch is `main`, which only holds released versions, so installing without `--committish`
+also gets the latest stable release; the tag pins a known version. New features are developed on `develop` (see
+"Development"): don't install from it. To upgrade later, or go back to a previous version:
 
 ```sh
 dokku plugin:update auto-deploy 0.2.0
@@ -411,6 +412,12 @@ through the configured channels and the log.
 
 ## Development
 
+The repository follows [git flow](https://nvie.com/posts/a-successful-git-branching-model/). `main`, the default
+branch, only receives releases, each tagged with its version (no `v` prefix: `0.2.0`). New features and fixes start
+from `develop` in a `feature/<name>` branch and go back to `develop` through a pull request; releases go from `develop`
+to `main`, and urgent fixes to a release start from `main` as `hotfix/<version>`. Details, and the conventions for
+code, commits and tests, are in [`docs/development.md`](docs/development.md).
+
 ```sh
 python3 -m venv .venv && . .venv/bin/activate
 make dev-install     # dev dependencies (needs pip 25.1+ for --group)
@@ -418,10 +425,11 @@ make check           # ruff, shellcheck, mypy --strict and pytest
 ```
 
 Tests run the real code, and the plugin's bash entry points, against a local fake HTTP server (forge and Telegram) and
-a fake `dokku` script; they never touch the network or a real Dokku. See [`AGENTS.md`](AGENTS.md) for the conventions.
+a fake `dokku` script; they never touch the network or a real Dokku.
 
-Releasing: bump `version` in `plugin.toml` and `__version__` in `dokku_auto_deploy/__init__.py` (a test checks they
-match), merge into `main` and tag it without a `v` prefix (`git tag 0.2.0 && git push --tags`).
+Releasing: in a `release/<version>` branch from `develop`, set `version` in `plugin.toml` and `__version__` in
+`dokku_auto_deploy/__init__.py` (a test checks they match), merge into `main`, tag the merge commit without a `v`
+prefix (`git tag 0.2.0 && git push --tags`) and merge `main` back into `develop`.
 
 ## License
 
