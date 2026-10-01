@@ -27,6 +27,32 @@ Features:
 
 The reasons behind these choices are in [`docs/design-decisions.md`](docs/design-decisions.md).
 
+## Why the server pulls
+
+The usual way to deploy to Dokku from CI is a job on the forge (GitHub Actions, GitLab CI, Forgejo Actions) that runs
+`git push dokku@server:app` with a Dokku SSH key stored in the forge's secrets. That key is far more than "permission
+to deploy": whoever holds it can run any Dokku command on the server, and Dokku commands give full control of the
+host. Dokku starts containers with any Docker option it is given, so these two commands, sent with that key, open a
+root shell with the server's whole filesystem mounted, every app's database credentials and secrets included:
+
+```sh
+dokku docker-options:add <app> run "--user root -v /:/host"
+dokku run <app> bash
+```
+
+With the key on the forge, everyone who can get it can do that:
+
+- anyone who can change a workflow in the repository, since workflows see the secrets (a malicious or careless
+  commit, a compromised developer account);
+- a third-party action or CI image used by the workflow, or a compromised dependency it runs;
+- the forge's administrators, and anyone who breaches the forge.
+
+This plugin inverts the direction: the server asks the forge, through its API, which commit is at the head of a
+branch and whether its CI passed, then fetches and builds that commit itself. The forge holds no credential to the
+server and needs no network access to it; the server only holds a token that can read the repositories (and comment on
+pull/merge requests, if enabled). The cost is latency: a deploy starts up to a minute after CI finishes. The
+alternatives considered are in [`docs/design-decisions.md`](docs/design-decisions.md#pull-not-push).
+
 ## How it works
 
 For each app with a `repository` set, every run:

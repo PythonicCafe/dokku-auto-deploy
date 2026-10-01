@@ -5,7 +5,10 @@ docstrings; this file keeps the reasoning and the facts checked outside this rep
 
 ## Pull, not push
 
-Requirement: GitHub must not hold any credential that gives access to the Dokku server.
+Requirement: the forge must not hold any credential that gives access to the Dokku server. A Dokku SSH key runs any
+Dokku command, and Dokku commands amount to root on the host (e.g.
+`docker-options:add <app> run "--user root -v /:/host"` then `run`), so a "deploy key" on the forge is root access for
+anyone who can read the forge's secrets.
 
 | Option | Credential on GitHub | Exposed port | Latency |
 |---|---|---|---|
