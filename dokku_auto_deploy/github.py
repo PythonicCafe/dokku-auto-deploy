@@ -1,55 +1,72 @@
-"""Minimal GitHub REST client (stdlib only): the handful of calls the deploy cycle needs."""
+"""GitHub REST API: the handful of calls the deploy cycle needs."""
 
-import json
 import urllib.parse
-import urllib.request
 from typing import Any
 
+from dokku_auto_deploy.forge import Change, CIStatus, Forge
+
 DEFAULT_API = "https://api.github.com"
-HTTP_TIMEOUT = 30
 
 
-class GitHub:
-    def __init__(self, token: str, api: str = DEFAULT_API) -> None:
+class GitHub(Forge):
+    name = "GitHub"
+
+    def __init__(self, repository: str, token: str, api: str = DEFAULT_API) -> None:
+        super().__init__(api)
+        self.repository = repository
         self.token = token
-        self.api = api.rstrip("/")
 
-    def _request(self, method: str, path: str, params: dict[str, Any] | None = None, payload: Any = None) -> Any:
-        url = f"{self.api}{path}"
-        if params:
-            url += "?" + urllib.parse.urlencode(params)
-        headers = {
+    def headers(self) -> dict[str, str]:
+        return {
             "Accept": "application/vnd.github+json",
             "Authorization": f"Bearer {self.token}",
             "X-GitHub-Api-Version": "2022-11-28",
         }
-        data = None
-        if payload is not None:
-            data = json.dumps(payload).encode()
-            headers["Content-Type"] = "application/json"
-        request = urllib.request.Request(url, data=data, method=method, headers=headers)
-        with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT) as response:
-            return json.load(response)
 
-    def branch_head(self, repository: str, branch: str) -> str:
-        path = f"/repos/{repository}/branches/{urllib.parse.quote(branch, safe='')}"
-        return str(self._request("GET", path)["commit"]["sha"])
+    def branch_head(self, branch: str) -> str:
+        path = f"/repos/{self.repository}/branches/{urllib.parse.quote(branch, safe='')}"
+        return str(self.request("GET", path)["commit"]["sha"])
 
-    def push_runs(self, repository: str, branch: str, sha: str) -> list[dict[str, Any]]:
-        """Workflow runs triggered by pushes of `sha` to `branch` (all workflows; the caller filters by file)."""
+    def ci_status(self, sha: str, branch: str, workflow: str) -> CIStatus:
+        """Runs triggered by pushes of `sha` to `branch`; the API can't filter by workflow file, so it's done here."""
         params = {"head_sha": sha, "branch": branch, "event": "push", "per_page": 100}
-        runs: list[dict[str, Any]] = self._request("GET", f"/repos/{repository}/actions/runs", params)["workflow_runs"]
-        return runs
+        runs: list[dict[str, Any]] = self.request("GET", f"/repos/{self.repository}/actions/runs", params)[
+            "workflow_runs"
+        ]
+        matching = [run for run in runs if run.get("path") == workflow]
+        if not matching:
+            return "missing"
+        latest = max(matching, key=lambda run: int(run["id"]))
+        if latest["status"] != "completed":
+            return "pending"
+        return "success" if latest["conclusion"] == "success" else "failure"
 
-    def commits_between(self, repository: str, base: str, head: str) -> set[str]:
-        comparison = self._request("GET", f"/repos/{repository}/compare/{base}...{head}")
+    def commits_between(self, base: str, head: str) -> set[str]:
+        comparison = self.request("GET", f"/repos/{self.repository}/compare/{base}...{head}")
         return {commit["sha"] for commit in comparison["commits"]}
 
-    def closed_pulls(self, repository: str, base_branch: str) -> list[dict[str, Any]]:
-        """Most recently updated closed PRs into `base_branch` (one page of 100 is enough for a polling interval)."""
-        params = {"state": "closed", "base": base_branch, "sort": "updated", "direction": "desc", "per_page": 100}
-        pulls: list[dict[str, Any]] = self._request("GET", f"/repos/{repository}/pulls", params)
-        return pulls
+    def merged_changes(self, branch: str) -> list[Change]:
+        """Most recently updated closed PRs into `branch` (one page of 100 is enough for a polling interval).
 
-    def comment(self, repository: str, number: int, body: str) -> None:
-        self._request("POST", f"/repos/{repository}/issues/{number}/comments", payload={"body": body})
+        `merge_commit_sha` is the merge commit, the squashed commit or the last rebased commit, so it identifies the
+        PR in the branch history whatever the merge method.
+        """
+        params = {"state": "closed", "base": branch, "sort": "updated", "direction": "desc", "per_page": 100}
+        pulls: list[dict[str, Any]] = self.request("GET", f"/repos/{self.repository}/pulls", params)
+        return [
+            Change(
+                number=int(pull["number"]),
+                reference=f"#{pull['number']}",
+                title=pull.get("title") or "",
+                url=pull["html_url"],
+                shas=frozenset({pull["merge_commit_sha"]}),
+            )
+            for pull in pulls
+            if pull.get("merged_at") and pull.get("merge_commit_sha")
+        ]
+
+    def comment(self, change: Change, body: str) -> None:
+        self.request("POST", f"/repos/{self.repository}/issues/{change.number}/comments", payload={"body": body})
+
+    def commit_url(self, sha: str) -> str:
+        return f"https://github.com/{self.repository}/commit/{sha}"

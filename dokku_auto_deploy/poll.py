@@ -3,9 +3,9 @@
 Decision per target (see `decide`):
 - head SHA already handled (deployed, CI failed or deploy failed) -> skip. A failed deploy is not retried on its own,
   to avoid rebuilding a broken commit every cycle; `force_apps` retries it.
-- CI of that SHA (push event on that branch, configured workflow file) not finished -> wait for the next cycle.
+- CI of that SHA (push event on that branch, configured workflow) not finished -> wait for the next cycle.
   With an empty workflow there is no CI to wait for.
-- CI failed -> recorded, nothing deployed, nobody notified (GitHub already shows the red CI).
+- CI failed -> recorded, nothing deployed, nobody notified (the forge already shows the red CI).
 - CI passed -> `dokku git:sync --build` of that exact SHA, unless the app is locked (manual deploy or `apps:lock`),
   or Dokku already runs it (its last successful deploy): then it is only recorded, so a first run or a lost state file doesn't rebuild
   apps that are up to date. `force_apps` rebuilds anyway.
@@ -14,13 +14,13 @@ Decision per target (see `decide`):
 import datetime
 import json
 import logging
-import urllib.error
 from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any, Literal
 
 from dokku_auto_deploy import dokku
 from dokku_auto_deploy.config import Config, Target
+from dokku_auto_deploy.forge import Change, CIStatus, Forge, ForgeError
 from dokku_auto_deploy.github import DEFAULT_API as GITHUB_API
 from dokku_auto_deploy.github import GitHub
 from dokku_auto_deploy.notify import DeployResult, notify
@@ -32,42 +32,33 @@ Action = Literal["skip", "wait", "ci_failed", "deploy"]
 OutputCallback = Callable[[bytes], object]
 
 
-def decide(head_sha: str, runs: list[dict[str, Any]], state: dict[str, Any] | None, workflow: str) -> Action:
-    """What to do with `head_sha`. Only the latest run of `workflow` counts, so a successful re-run wins.
-
-    An empty `workflow` means the repository has no CI to wait for: every new head is deployed.
-    """
+def decide(head_sha: str, state: dict[str, Any] | None, ci: CIStatus | None) -> Action:
+    """What to do with `head_sha`, given the status of its CI (`None`: the repository has no CI to wait for)."""
     if state is not None and state.get("sha") == head_sha:
         return "skip"
-    if not workflow:
+    if ci is None or ci == "success":
         return "deploy"
-    matching = [run for run in runs if run.get("path") == workflow]
-    if not matching:
-        return "wait"
-    latest = max(matching, key=lambda run: int(run["id"]))
-    if latest["status"] != "completed":
-        return "wait"
-    return "deploy" if latest["conclusion"] == "success" else "ci_failed"
+    return "ci_failed" if ci == "failure" else "wait"
 
 
-def select_merged_prs(pulls: list[dict[str, Any]], shas: set[str]) -> list[dict[str, Any]]:
-    """PRs whose merge commit is among `shas` (covers merge, squash and rebase merges)."""
-    return [pull for pull in pulls if pull.get("merged_at") and pull.get("merge_commit_sha") in shas]
+def select_merged(changes: list[Change], shas: set[str]) -> list[Change]:
+    """Changes with a commit among `shas` (the deployed range)."""
+    return [change for change in changes if change.shas & shas]
 
 
-def merged_prs(github: GitHub, target: Target, previous_sha: str | None, sha: str) -> list[dict[str, Any]]:
-    """PRs merged into the target branch after `previous_sha` up to `sha`.
+def merged_changes(forge: Forge, target: Target, previous_sha: str | None, sha: str) -> list[Change]:
+    """Changes merged into the target branch after `previous_sha` up to `sha`.
 
-    Several PRs can land in one deploy (merged while CI was running), so the whole range counts. Without a previous
+    Several can land in one deploy (merged while CI was running), so the whole range counts. Without a previous
     deploy, or when the range can't be compared (history rewritten), only `sha` itself is considered.
     """
     shas = {sha}
     if previous_sha and previous_sha != sha:
         try:
-            shas |= github.commits_between(target.repository, previous_sha, sha)
-        except urllib.error.HTTPError as exc:
+            shas |= forge.commits_between(previous_sha, sha)
+        except ForgeError as exc:
             logger.warning("[%s] compare %s...%s failed (%s), using head only", target.app, previous_sha, sha, exc)
-    return select_merged_prs(github.closed_pulls(target.repository, target.branch), shas)
+    return select_merged(forge.merged_changes(target.branch), shas)
 
 
 def load_state(path: Path) -> dict[str, dict[str, Any]]:
@@ -88,18 +79,20 @@ def save_state(path: Path, state: dict[str, dict[str, Any]]) -> None:
 def process_target(
     target: Target,
     state: dict[str, dict[str, Any]],
-    github: GitHub,
+    forge: Forge,
     telegram_token: str | None,
     telegram_api: str,
     force: bool,
     on_output: OutputCallback | None,
 ) -> None:
     app, branch = target.app, target.branch
-    sha = github.branch_head(target.repository, branch)
+    sha = forge.branch_head(branch)
     last_deployed = state.get(app, {}).get("deployed_sha")
     current = None if force else state.get(app)
-    runs = github.push_runs(target.repository, branch, sha) if target.workflow else []
-    action = decide(sha, runs, current, target.workflow)
+    ci = None
+    if target.workflow and (current is None or current.get("sha") != sha):
+        ci = forge.ci_status(sha, branch, target.workflow)
+    action = decide(sha, current, ci)
     if action == "skip":
         return
     if action == "wait":
@@ -124,14 +117,14 @@ def process_target(
         status = "deployed" if success else "deploy_failed"
         logger.info("[%s] %s: %s", app, sha[:8], status)
         if target.notify:
-            prs: list[dict[str, Any]] = []
+            changes: list[Change] = []
             if sha != last_deployed:
                 try:
-                    prs = merged_prs(github, target, last_deployed, sha)
-                except (OSError, KeyError, ValueError) as exc:
-                    logger.warning("[%s] could not list merged PRs: %s", app, exc)
-            result = DeployResult(target, sha, success, output, prs, dokku.app_url(app))
-            for failure in notify(result, github.token, telegram_token, github.api, telegram_api):
+                    changes = merged_changes(forge, target, last_deployed, sha)
+                except (ForgeError, KeyError, ValueError) as exc:
+                    logger.warning("[%s] could not list merged changes: %s", app, exc)
+            result = DeployResult(target, sha, success, output, changes, forge.commit_url(sha), dokku.app_url(app))
+            for failure in notify(result, forge, telegram_token, telegram_api):
                 logger.warning("[%s] notification failed: %s", app, failure)
         if success:
             last_deployed = sha
@@ -157,13 +150,13 @@ def poll(
     Targets are independent: an error in one is logged and the others still run. State is saved after each target so
     an interruption keeps what was already done.
     """
-    github = GitHub(github_token, github_api)
     forced = set(force_apps)
     state = load_state(config.settings.state_file)
     errors = 0
     for target in config.targets:
         try:
-            process_target(target, state, github, telegram_token, telegram_api, target.app in forced, on_output)
+            forge = GitHub(target.repository, github_token, github_api)
+            process_target(target, state, forge, telegram_token, telegram_api, target.app in forced, on_output)
         except Exception as exc:
             errors += 1
             logger.error("[%s] %s", target.app, exc)

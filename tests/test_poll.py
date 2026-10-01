@@ -3,7 +3,8 @@ import json
 import pytest
 
 from dokku_auto_deploy.config import parse_config
-from dokku_auto_deploy.poll import decide, poll, select_merged_prs
+from dokku_auto_deploy.forge import Change
+from dokku_auto_deploy.poll import decide, poll, select_merged
 
 WORKFLOW = ".github/workflows/ci.yml"
 
@@ -14,30 +15,19 @@ def run(conclusion="success", status="completed", path=WORKFLOW, run_id=1):
 
 class TestDecide:
     @pytest.mark.parametrize(
-        "head, runs, state, expected",
+        "head, state, ci, expected",
         [
-            pytest.param("abc", [run()], {"sha": "abc", "status": "deployed"}, "skip", id="already-deployed"),
-            pytest.param("abc", [run()], {"sha": "abc", "status": "deploy_failed"}, "skip", id="failed-not-retried"),
-            pytest.param("new", [run()], {"sha": "old", "status": "deployed"}, "deploy", id="new-green"),
-            pytest.param("new", [run()], None, "deploy", id="first-deploy"),
-            pytest.param("new", [], None, "wait", id="ci-not-started"),
-            pytest.param("new", [run(status="in_progress", conclusion=None)], None, "wait", id="ci-running"),
-            pytest.param("new", [run(conclusion="failure")], None, "ci_failed", id="ci-failed"),
-            pytest.param("new", [run(path=".github/workflows/other.yml")], None, "wait", id="other-workflow"),
-            pytest.param(
-                "new", [run(conclusion="failure", run_id=1), run(run_id=2)], None, "deploy", id="rerun-green-wins"
-            ),
-            pytest.param(
-                "new",
-                [run(conclusion="failure", run_id=1), run(status="queued", conclusion=None, run_id=2)],
-                None,
-                "wait",
-                id="rerun-running",
-            ),
+            pytest.param("abc", {"sha": "abc", "status": "deployed"}, "success", "skip", id="already-deployed"),
+            pytest.param("abc", {"sha": "abc", "status": "deploy_failed"}, "success", "skip", id="failed-not-retried"),
+            pytest.param("new", {"sha": "old", "status": "deployed"}, "success", "deploy", id="new-green"),
+            pytest.param("new", None, "success", "deploy", id="first-deploy"),
+            pytest.param("new", None, "missing", "wait", id="ci-not-started"),
+            pytest.param("new", None, "pending", "wait", id="ci-running"),
+            pytest.param("new", None, "failure", "ci_failed", id="ci-failed"),
         ],
     )
-    def test_decide(self, head, runs, state, expected):
-        assert decide(head, runs, state, WORKFLOW) == expected
+    def test_decide(self, head, state, ci, expected):
+        assert decide(head, state, ci) == expected
 
     @pytest.mark.parametrize(
         "state, expected",
@@ -47,8 +37,8 @@ class TestDecide:
             pytest.param({"sha": "new", "status": "deployed"}, "skip", id="same-sha"),
         ],
     )
-    def test_empty_workflow_ignores_ci(self, state, expected):
-        assert decide("new", [run(conclusion="failure")], state, "") == expected
+    def test_no_ci_to_wait_for(self, state, expected):
+        assert decide("new", state, None) == expected
 
 
 def pr(number, merge_sha, merged=True):
@@ -61,9 +51,13 @@ def pr(number, merge_sha, merged=True):
     }
 
 
-def test_select_merged_prs_in_range():
-    pulls = [pr(1, "a"), pr(2, "b"), pr(3, "zzz"), pr(4, "a", merged=False)]
-    assert [item["number"] for item in select_merged_prs(pulls, {"a", "b"})] == [1, 2]
+def change(number, *shas):
+    return Change(number, f"#{number}", f"PR {number}", f"https://example.com/{number}", frozenset(shas))
+
+
+def test_select_merged_keeps_changes_with_a_commit_in_the_range():
+    changes = [change(1, "a"), change(2, "b"), change(3, "zzz"), change(4, "x", "a")]
+    assert [item.number for item in select_merged(changes, {"a", "b"})] == [1, 2, 4]
 
 
 def make_config(tmp_path, notify='["github", "telegram"]', workflow=WORKFLOW):

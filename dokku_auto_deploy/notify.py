@@ -1,4 +1,4 @@
-"""Deploy result messages and the channels that deliver them (GitHub PR comments, Telegram)."""
+"""Deploy result messages and the channels that deliver them (comments on merged changes, Telegram)."""
 
 import dataclasses
 import html
@@ -6,11 +6,9 @@ import logging
 import re
 import socket
 from collections.abc import Iterable
-from typing import Any
 
 from dokku_auto_deploy.config import Target
-from dokku_auto_deploy.github import DEFAULT_API as GITHUB_API
-from dokku_auto_deploy.github import GitHub
+from dokku_auto_deploy.forge import Change, Forge, ForgeError
 from dokku_auto_deploy.telegram import DEFAULT_API as TELEGRAM_API
 from dokku_auto_deploy.telegram import Telegram
 
@@ -26,7 +24,8 @@ class DeployResult:
     sha: str
     success: bool
     output: str
-    prs: list[dict[str, Any]]
+    changes: list[Change]
+    commit_url: str
     app_url: str | None = None
 
 
@@ -36,14 +35,10 @@ def error_tail(output: str, max_lines: int = 60) -> str:
     return "\n".join(lines).replace("```", "'''")
 
 
-def commit_url(result: DeployResult) -> str:
-    return f"https://github.com/{result.target.repository}/commit/{result.sha}"
-
-
 def comment_body(result: DeployResult) -> str:
-    """Markdown comment. The commit is an explicit link: GitHub doesn't autolink a SHA inside backticks."""
+    """Markdown comment. The commit is an explicit link: forges don't autolink a SHA inside backticks."""
     app = result.target.app
-    commit = f"[`{result.sha[:8]}`]({commit_url(result)})"
+    commit = f"[`{result.sha[:8]}`]({result.commit_url})"
     app_line = f"\n\nApp: [{result.app_url}]({result.app_url})" if result.app_url else ""
     if result.success:
         return f"Deploy of {commit} to `{app}` succeeded.{app_line}"
@@ -58,21 +53,22 @@ def comment_body(result: DeployResult) -> str:
 def telegram_text(result: DeployResult) -> str:
     """Message for `parse_mode=HTML`; the build log is cut (from the start) to fit the length limit.
 
-    The commit link sits behind the word "commit" and each PR link spans "#number title"; the app URL is shown in full.
+    The commit link sits behind the word "commit" and each change link spans its reference and title ("#12 Title");
+    the app URL is shown in full.
     """
     target, sha = result.target, result.sha
     status = "succeeded" if result.success else "FAILED"
     lines = [
         f"Deploy {status}: <b>{html.escape(target.app)}</b>",
-        f'{html.escape(target.repository)} {html.escape(target.branch)}, <a href="{html.escape(commit_url(result))}">'
+        f'{html.escape(target.repository)} {html.escape(target.branch)}, <a href="{html.escape(result.commit_url)}">'
         f"commit</a> <code>{sha[:8]}</code>",
     ]
     if result.app_url:
         url = html.escape(result.app_url)
         lines.append(f'<a href="{url}">{url}</a>')
-    for pull in result.prs:
-        label = html.escape(f"#{pull['number']} {pull.get('title') or ''}".strip())
-        lines.append(f'<a href="{html.escape(pull["html_url"])}">{label}</a>')
+    for change in result.changes:
+        label = html.escape(f"{change.reference} {change.title}".strip())
+        lines.append(f'<a href="{html.escape(change.url)}">{label}</a>')
     text = "\n".join(lines)
     if not result.success:
         room = TELEGRAM_MAX_LENGTH - len(text) - len("\n<pre></pre>")
@@ -87,9 +83,8 @@ def telegram_text(result: DeployResult) -> str:
 
 def notify(
     result: DeployResult,
-    github_token: str,
+    forge: Forge,
     telegram_token: str | None,
-    github_api: str = GITHUB_API,
     telegram_api: str = TELEGRAM_API,
 ) -> list[str]:
     """Deliver `result` to every channel enabled for its target; returns one message per failed channel.
@@ -102,19 +97,18 @@ def notify(
     for channel in result.target.notify:
         try:
             if channel == "github":
-                if not result.prs:
-                    logger.info("[%s] GitHub: no merged pull request in this deploy, nothing to comment", app)
-                github = GitHub(github_token, github_api)
-                for pull in result.prs:
-                    github.comment(result.target.repository, pull["number"], comment_body(result))
-                    logger.info("[%s] GitHub: commented on PR #%s", app, pull["number"])
+                if not result.changes:
+                    logger.info("[%s] %s: no merged change in this deploy, nothing to comment", app, forge.name)
+                for change in result.changes:
+                    forge.comment(change, comment_body(result))
+                    logger.info("[%s] %s: commented on %s", app, forge.name, change.reference)
             elif channel == "telegram":
                 if not telegram_token:
                     raise RuntimeError("no Telegram bot token (see telegram-token-file in [settings])")
                 telegram = Telegram(telegram_token, telegram_api)
                 telegram.send_message(result.target.telegram_chat, telegram_text(result))
                 logger.info("[%s] Telegram: message sent to %s", app, result.target.telegram_chat)
-        except (RuntimeError, OSError, KeyError, ValueError) as exc:
+        except (ForgeError, RuntimeError, OSError, KeyError, ValueError) as exc:
             failures.append(f"{channel}: {exc}")
     return failures
 

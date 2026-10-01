@@ -1,6 +1,8 @@
 import logging
 
 from dokku_auto_deploy.config import Target
+from dokku_auto_deploy.forge import Change
+from dokku_auto_deploy.github import GitHub
 from dokku_auto_deploy.notify import (
     TELEGRAM_MAX_LENGTH,
     DeployResult,
@@ -28,13 +30,23 @@ def make_target(notify=(), telegram_chat=""):
 APP_URL = "https://proj-stg.example.com"
 
 
-def make_result(success=True, output="", prs=(), target=None, app_url=APP_URL):
+def make_result(success=True, output="", changes=(), target=None, app_url=APP_URL):
     return DeployResult(
-        target=target or make_target(), sha=SHA, success=success, output=output, prs=list(prs), app_url=app_url
+        target=target or make_target(),
+        sha=SHA,
+        success=success,
+        output=output,
+        changes=list(changes),
+        commit_url=f"https://github.com/Org/proj/commit/{SHA}",
+        app_url=app_url,
     )
 
 
-PR_7 = {"number": 7, "title": "Adds <export> & more", "html_url": "https://github.com/Org/proj/pull/7"}
+def pull(number, title="Adds <export> & more"):
+    return Change(number, f"#{number}", title, f"https://github.com/Org/proj/pull/{number}", frozenset({"m"}))
+
+
+PR_7 = pull(7)
 
 
 class TestErrorTail:
@@ -65,7 +77,7 @@ class TestGitHubComment:
 
 class TestTelegram:
     def test_links(self):
-        text = telegram_text(make_result(prs=[PR_7]))
+        text = telegram_text(make_result(changes=[PR_7]))
         assert f'<a href="https://github.com/Org/proj/commit/{SHA}">commit</a>' in text
         assert '<a href="https://github.com/Org/proj/pull/7">#7 Adds &lt;export&gt; &amp; more</a>' in text
         assert f'<a href="{APP_URL}">{APP_URL}</a>' in text
@@ -74,7 +86,7 @@ class TestTelegram:
         assert "proj-stg.example.com" not in telegram_text(make_result(app_url=None))
 
     def test_escapes_html_from_titles(self):
-        assert "Adds &lt;export&gt; &amp; more" in telegram_text(make_result(prs=[PR_7]))
+        assert "Adds &lt;export&gt; &amp; more" in telegram_text(make_result(changes=[PR_7]))
 
     def test_failure_log_is_escaped_truncated_and_keeps_the_end(self):
         output = "<script>\n" + ("x" * 200 + "\n") * 100 + "FINAL ERROR\n"
@@ -88,8 +100,8 @@ class TestNotify:
     def test_github_comments_on_each_merged_pr(self, fake_api):
         fake_api.routes["POST /repos/Org/proj/issues/7/comments"] = (201, {})
         fake_api.routes["POST /repos/Org/proj/issues/8/comments"] = (201, {})
-        result = make_result(prs=[PR_7, {**PR_7, "number": 8}], target=make_target(notify=["github"]))
-        failures = notify(result, github_token="gh", telegram_token=None, github_api=fake_api.url)
+        result = make_result(changes=[PR_7, pull(8)], target=make_target(notify=["github"]))
+        failures = notify(result, GitHub("Org/proj", "gh", fake_api.url), telegram_token=None)
         assert failures == []
         assert [path for path, _ in fake_api.posts()] == [
             "/repos/Org/proj/issues/7/comments",
@@ -97,14 +109,14 @@ class TestNotify:
         ]
 
     def test_github_without_prs_sends_nothing(self, fake_api):
-        result = make_result(prs=[], target=make_target(notify=["github"]))
-        assert notify(result, github_token="gh", telegram_token=None, github_api=fake_api.url) == []
+        result = make_result(changes=[], target=make_target(notify=["github"]))
+        assert notify(result, GitHub("Org/proj", "gh", fake_api.url), telegram_token=None) == []
         assert fake_api.posts() == []
 
     def test_telegram_sends_to_topic(self, fake_api):
         fake_api.routes["POST /botTOKEN/sendMessage"] = (200, {"ok": True})
         result = make_result(target=make_target(notify=["telegram"], telegram_chat="-100_29"))
-        assert notify(result, github_token="gh", telegram_token="TOKEN", telegram_api=fake_api.url) == []
+        assert notify(result, GitHub("Org/proj", "gh"), telegram_token="TOKEN", telegram_api=fake_api.url) == []
         ((path, fields),) = fake_api.posts()
         assert path == "/botTOKEN/sendMessage"
         assert (fields["chat_id"], fields["message_thread_id"], fields["parse_mode"]) == ("-100", "29", "HTML")
@@ -114,10 +126,9 @@ class TestNotify:
         fake_api.routes["POST /repos/Org/proj/issues/7/comments"] = (201, {})
         target = make_target(notify=["telegram", "github"], telegram_chat="-100")
         failures = notify(
-            make_result(prs=[PR_7], target=target),
-            github_token="gh",
+            make_result(changes=[PR_7], target=target),
+            GitHub("Org/proj", "gh", fake_api.url),
             telegram_token="TOKEN",
-            github_api=fake_api.url,
             telegram_api=fake_api.url,
         )
         assert len(failures) == 1
@@ -126,7 +137,7 @@ class TestNotify:
 
     def test_telegram_without_token_is_a_failure(self):
         target = make_target(notify=["telegram"], telegram_chat="-100")
-        (failure,) = notify(make_result(target=target), github_token="gh", telegram_token=None)
+        (failure,) = notify(make_result(target=target), GitHub("Org/proj", "gh"), telegram_token=None)
         assert "token" in failure
 
 
@@ -134,17 +145,21 @@ class TestNotifyLog:
     def test_logs_each_github_comment(self, fake_api, caplog):
         fake_api.routes["POST /repos/Org/proj/issues/7/comments"] = (201, {})
         caplog.set_level(logging.INFO)
-        notify(make_result(prs=[PR_7], target=make_target(notify=["github"])), "gh", None, github_api=fake_api.url)
-        assert "[proj-stg] GitHub: commented on PR #7" in caplog.messages
+        notify(
+            make_result(changes=[PR_7], target=make_target(notify=["github"])),
+            GitHub("Org/proj", "gh", fake_api.url),
+            None,
+        )
+        assert "[proj-stg] GitHub: commented on #7" in caplog.messages
 
     def test_logs_why_github_did_not_comment(self, caplog):
         caplog.set_level(logging.INFO)
-        notify(make_result(prs=[], target=make_target(notify=["github"])), "gh", None)
-        assert "[proj-stg] GitHub: no merged pull request in this deploy, nothing to comment" in caplog.messages
+        notify(make_result(changes=[], target=make_target(notify=["github"])), GitHub("Org/proj", "gh"), None)
+        assert "[proj-stg] GitHub: no merged change in this deploy, nothing to comment" in caplog.messages
 
     def test_logs_telegram_message(self, fake_api, caplog):
         fake_api.routes["POST /botTOKEN/sendMessage"] = (200, {"ok": True})
         caplog.set_level(logging.INFO)
         target = make_target(notify=["telegram"], telegram_chat="-100_29")
-        notify(make_result(target=target), "gh", "TOKEN", telegram_api=fake_api.url)
+        notify(make_result(target=target), GitHub("Org/proj", "gh"), "TOKEN", telegram_api=fake_api.url)
         assert "[proj-stg] Telegram: message sent to -100_29" in caplog.messages
