@@ -1,7 +1,7 @@
 import pytest
 
 from dokku_auto_deploy.forge import Change
-from dokku_auto_deploy.poll import decide, load_state, poll, save_state, select_merged
+from dokku_auto_deploy.poll import PollResult, decide, load_state, poll, save_state, select_merged
 from dokku_auto_deploy.properties import GLOBAL
 
 WORKFLOW = ".github/workflows/ci.yml"
@@ -117,7 +117,7 @@ class TestPoll:
         fake_dokku.set(output="-----> Building\n")
         write_state(app_env, sha="c1", status="deployed", deployed_sha="c1")
         output = []
-        assert do_poll(app_env, fake_api, output) == 0
+        assert do_poll(app_env, fake_api, output).errors == 0
         assert fake_dokku.syncs == [f"git:sync --build proj-stg {clone_url(fake_api)} c3"]
         assert b"".join(output) == b"-----> Building\n"
         assert (read_state(app_env)["status"], read_state(app_env)["deployed_sha"]) == ("deployed", "c3")
@@ -128,7 +128,7 @@ class TestPoll:
         fake_dokku.set()
         write_state(app_env, sha="c1", status="deployed", deployed_sha="c1")
         app_env.configure("proj-stg", notify="none", workflow="none")
-        assert do_poll(app_env, fake_api) == 0
+        assert do_poll(app_env, fake_api).errors == 0
         assert fake_dokku.syncs == [f"git:sync --build proj-stg {clone_url(fake_api)} c3"]
         assert not [path for _, path, _, _ in fake_api.requests if path.endswith("/actions/runs")]
 
@@ -144,14 +144,14 @@ class TestPoll:
     def test_waits_while_ci_runs(self, app_env, fake_api, fake_dokku):
         github_state(fake_api, runs=[run(status="in_progress", conclusion=None)])
         write_state(app_env, sha="c1", status="deployed", deployed_sha="c1")
-        assert do_poll(app_env, fake_api) == 0
+        assert do_poll(app_env, fake_api).errors == 0
         assert fake_dokku.syncs == []
         assert read_state(app_env)["sha"] == "c1"
 
     def test_red_ci_is_recorded_without_deploy_or_notification(self, app_env, fake_api, fake_dokku):
         github_state(fake_api, runs=[run(conclusion="failure")])
         write_state(app_env, sha="c1", status="deployed", deployed_sha="c1")
-        assert do_poll(app_env, fake_api) == 0
+        assert do_poll(app_env, fake_api).errors == 0
         assert fake_dokku.syncs == []
         assert read_state(app_env)["status"] == "ci_failed"
         assert fake_api.posts() == []
@@ -161,7 +161,7 @@ class TestPoll:
         fake_dokku.set(exit_code=1, output=" ! pip install failed\n")
         write_state(app_env, sha="c1", status="deployed", deployed_sha="c1")
         app_env.configure("proj-stg", notify="comment")
-        do_poll(app_env, fake_api)
+        assert do_poll(app_env, fake_api) == PollResult(errors=0, failed_deploys=1)
         (comment,) = fake_api.posts()
         assert "pip install failed" in comment[1]["body"]
         assert read_state(app_env) | {"at": None} == {
@@ -181,7 +181,7 @@ class TestPoll:
         github_state(fake_api)
         fake_dokku.set(lock="deploying")
         write_state(app_env, sha="c1", status="deployed", deployed_sha="c1")
-        assert do_poll(app_env, fake_api) == 0
+        assert do_poll(app_env, fake_api).errors == 0
         assert fake_dokku.syncs == []
         assert read_state(app_env)["sha"] == "c1"
         assert fake_api.posts() == []
@@ -190,7 +190,7 @@ class TestPoll:
         github_state(fake_api)
         fake_dokku.set(exit_code=1, lock_during_sync="deploying")
         write_state(app_env, sha="c1", status="deployed", deployed_sha="c1")
-        assert do_poll(app_env, fake_api) == 0
+        assert do_poll(app_env, fake_api).errors == 0
         assert len(fake_dokku.syncs) == 1
         assert read_state(app_env)["sha"] == "c1"
         assert fake_api.posts() == []
@@ -230,7 +230,7 @@ class TestPoll:
     def test_commit_already_running_is_recorded_without_rebuilding(self, app_env, fake_api, fake_dokku):
         github_state(fake_api)
         fake_dokku.set(deploy_source="https://example.com/Org/proj.git#c3")
-        assert do_poll(app_env, fake_api) == 0
+        assert do_poll(app_env, fake_api).errors == 0
         assert fake_dokku.syncs == []
         assert (read_state(app_env)["status"], read_state(app_env)["deployed_sha"]) == ("deployed", "c3")
         assert fake_api.posts() == []
@@ -252,7 +252,7 @@ class TestPoll:
 
     def test_api_error_counts_as_error_and_keeps_state(self, app_env, fake_api, fake_dokku):
         write_state(app_env, sha="c1", status="deployed", deployed_sha="c1")
-        assert do_poll(app_env, fake_api) == 1
+        assert do_poll(app_env, fake_api).errors == 1
         assert fake_dokku.syncs == []
         assert read_state(app_env)["sha"] == "c1"
 
@@ -262,14 +262,14 @@ class TestPollApps:
         github_state(fake_api)
         fake_dokku.set()
         app_env.configure("other", branch="main")
-        assert do_poll(app_env, fake_api) == 0
+        assert do_poll(app_env, fake_api).errors == 0
         assert [sync.split()[2] for sync in fake_dokku.syncs] == ["proj-stg"]
 
     def test_invalid_app_is_an_error_and_others_still_deploy(self, app_env, fake_api, fake_dokku):
         github_state(fake_api)
         fake_dokku.set()
         app_env.configure("broken", repository=f"{fake_api.url}/Org/proj", forge="github")
-        assert do_poll(app_env, fake_api) == 1
+        assert do_poll(app_env, fake_api).errors == 1
         assert [sync.split()[2] for sync in fake_dokku.syncs] == ["proj-stg"]
 
     def test_workflow_and_notify_fall_back_to_global(self, app_env, fake_api, fake_dokku):
@@ -278,13 +278,13 @@ class TestPollApps:
         app_env.properties.delete("proj-stg", "workflow")
         app_env.properties.delete("proj-stg", "notify")
         app_env.configure(GLOBAL, workflow=".github/workflows/global.yml", notify="telegram")
-        assert do_poll(app_env, fake_api) == 0
+        assert do_poll(app_env, fake_api).errors == 0
         assert len(fake_dokku.syncs) == 1
         assert [path for path, _ in fake_api.posts()] == ["/botTG/sendMessage"]
 
     def test_missing_forge_token_is_an_error_without_calling_the_api(self, app_env, fake_api, fake_dokku):
         (app_env.home / ".netrc").write_text("machine gitlab.com login bot password X\n")
-        assert do_poll(app_env, fake_api) == 1
+        assert do_poll(app_env, fake_api).errors == 1
         assert fake_api.requests == []
 
     def test_api_calls_use_the_netrc_token(self, app_env, fake_api, fake_dokku):
@@ -298,7 +298,7 @@ def test_unreadable_state_starts_over(app_env, fake_api, fake_dokku, value):
     github_state(fake_api)
     fake_dokku.set(deploy_source="https://example.com/Org/proj.git#c3")
     app_env.properties.set("proj-stg", "state", value)
-    assert do_poll(app_env, fake_api) == 0
+    assert do_poll(app_env, fake_api).errors == 0
     assert fake_dokku.syncs == []
     assert read_state(app_env)["status"] == "deployed"
 
@@ -329,7 +329,7 @@ class TestRecordBeforeNotifying:
         fake_api.routes[f"GET {API}/pulls"] = (0, None)
         fake_dokku.set(exit_code=1)
         write_state(app_env, sha="c1", status="deployed", deployed_sha="c1")
-        assert do_poll(app_env, fake_api) == 0
+        assert do_poll(app_env, fake_api).errors == 0
         assert (read_state(app_env)["status"], read_state(app_env)["deployed_sha"]) == ("deploy_failed", "c1")
         assert [path for path, _ in fake_api.posts()] == ["/botTG/sendMessage"]
 
@@ -340,7 +340,7 @@ class TestRecordBeforeNotifying:
         github_state(fake_api)
         fake_dokku.set()
         monkeypatch.setattr("dokku_auto_deploy.poll.notify", broken_notify)
-        assert do_poll(app_env, fake_api) == 0
+        assert do_poll(app_env, fake_api).errors == 0
         assert read_state(app_env)["deployed_sha"] == "c3"
         assert len(fake_dokku.syncs) == 1
 
@@ -349,7 +349,7 @@ def test_locked_app_is_not_recorded_even_if_it_already_runs_the_head(app_env, fa
     github_state(fake_api)
     fake_dokku.set(lock="manual", deploy_source="https://example.com/Org/proj.git#c3")
     write_state(app_env, sha="c1", status="deployed", deployed_sha="c1")
-    assert do_poll(app_env, fake_api) == 0
+    assert do_poll(app_env, fake_api).errors == 0
     assert read_state(app_env)["sha"] == "c1"
 
 

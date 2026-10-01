@@ -119,7 +119,7 @@ def test_deploy_cycle(dokku_env, fake_api, fake_dokku):
     )
     fake_api.routes[f"POST {API}/merge_requests/5/notes"] = (201, {})
     fake_dokku.set()
-    assert poll(dokku_env.properties) == 0
+    assert poll(dokku_env.properties).errors == 0
     assert fake_dokku.syncs == [f"git:sync --build proj-stg {fake_api.url}/group/sub/proj.git c3"]
     ((path, body),) = fake_api.posts()
     assert path == f"{API}/merge_requests/5/notes"

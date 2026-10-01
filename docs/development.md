@@ -88,8 +88,8 @@ ones:
   `argparse.ArgumentTypeError`/`ConfigError` with a message that says what was expected.
 - Data (reports, the build log) goes to stdout, status and errors to stderr. Silence on success is fine; `-v`
   shows more.
-- Exit codes: 0 ok, 1 an app failed, 2 invalid arguments, 3 invalid settings, 130 interrupted. Keep them in the
-  README when adding a case.
+- Exit codes: 0 ok, 1 an app failed, 2 invalid arguments, 3 invalid settings, 4 a deploy failed (`poll`; 1 wins over
+  it), 130 interrupted. Keep them in the README and in the `--help` epilog when adding a case.
 - Only `cli.py` prints. Other modules log through `logging.getLogger(__name__)` and return data; the build output
   reaches the terminal through a callback.
 - Imports that only a command needs go inside that command's function, so `--help` stays fast.

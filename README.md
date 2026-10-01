@@ -324,6 +324,8 @@ journalctl -fu dokku-auto-deploy          # follow the logs and build output
 
 The service runs `dokku auto-deploy:poll` as the dokku user. `OnUnitInactiveSec` counts from the end of the previous
 run, so a long build only delays the next check; `systemctl start dokku-auto-deploy` runs a check right away.
+A run with a failed deploy exits with `4` and shows as failed in `systemctl status`; the timer keeps running. To see
+only the plugin's own errors there, add `SuccessExitStatus=4` with `systemctl edit dokku-auto-deploy`.
 
 Or cron, fully managed by the plugin and without root: it adds a task to the crontab Dokku manages for the dokku user
 (`dokku cron:list --global` shows it), logging to `/var/log/dokku/auto-deploy.log` (rotated with Dokku's other logs):
@@ -406,10 +408,11 @@ dokku auto-deploy:schedule [systemd|cron|none]           show or choose what run
   runs. It is not called `--force` because Dokku takes `--force` for itself.
 - `poll -v/--verbose`: also log apps that are waiting for CI.
 - Exit codes: `0` ok; `1` at least one app failed (e.g. API error; the others still ran); `2` invalid arguments; `3`
-  invalid or incomplete settings; `130` interrupted.
+  invalid or incomplete settings; `4` (`poll`) at least one deploy failed; `130` interrupted.
 
-A failed deploy or failed notification does not make the exit code non-zero: it is an expected outcome, reported
-through the configured channels and the log.
+`1` takes precedence over `4`: when a run has both an app error and a failed deploy, it exits with `1`, since the error
+needs fixing first. A commit whose CI failed is not an error (`0`): nothing was deployed. A failed notification doesn't
+change the exit code either; it is logged.
 
 ## Development
 

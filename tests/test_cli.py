@@ -10,7 +10,7 @@ import pytest
 
 from dokku_auto_deploy import __version__
 from dokku_auto_deploy.cli import main, parse_args, parse_change_number
-from dokku_auto_deploy.poll import load_state, poll_lock, save_state
+from dokku_auto_deploy.poll import PollResult, load_state, poll_lock, save_state
 from dokku_auto_deploy.properties import GLOBAL, data_dir
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -367,6 +367,19 @@ class TestPoll:
 
     def test_error_in_an_app_exits_1(self, app_env, fake_api, fake_dokku):
         assert main(["auto-deploy:poll"]) == 1
+
+    def test_failed_deploy_exits_4(self, app_env, fake_api, fake_dokku):
+        fake_api.routes[f"GET {API}/branches/develop"] = (200, {"commit": {"sha": "c3"}})
+        fake_dokku.set(exit_code=1)
+        assert main(["auto-deploy:poll"]) == 4
+
+    @pytest.mark.parametrize(
+        ("result", "code"),
+        [(PollResult(), 0), (PollResult(failed_deploys=2), 4), (PollResult(errors=1, failed_deploys=2), 1)],
+    )
+    def test_tool_errors_take_precedence_over_failed_deploys(self, app_env, monkeypatch, result, code):
+        monkeypatch.setattr("dokku_auto_deploy.poll.poll", lambda *args, **kwargs: result)
+        assert main(["auto-deploy:poll"]) == code
 
     def test_redeploy_while_another_poll_runs_is_an_error(self, app_env, fake_api, capsys):
         with poll_lock(data_dir() / "poll.lock"):

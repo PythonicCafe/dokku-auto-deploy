@@ -15,6 +15,7 @@ EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_USAGE = 2
 EXIT_CONFIG = 3
+EXIT_DEPLOY_FAILED = 4
 EXIT_INTERRUPTED = 130
 PREFIX = "auto-deploy:"
 
@@ -35,7 +36,8 @@ def create_parser() -> argparse.ArgumentParser:
         prog="dokku",
         description="Deploy Dokku apps from forge branches once their CI passes",
         epilog=f"Exit codes: {EXIT_OK} ok, {EXIT_ERROR} error in at least one app, {EXIT_USAGE} invalid arguments, "
-        f"{EXIT_CONFIG} invalid settings, {EXIT_INTERRUPTED} interrupted.",
+        f"{EXIT_CONFIG} invalid settings, {EXIT_DEPLOY_FAILED} (poll) at least one deploy failed and no other error, "
+        f"{EXIT_INTERRUPTED} interrupted. A commit whose CI failed isn't an error.",
     )
     parser.add_argument("-V", "--version", action="version", version=f"auto-deploy {__version__}")
     commands = parser.add_subparsers(dest="command", metavar="command", required=True)
@@ -233,7 +235,7 @@ def _poll(properties: Properties, redeploy: list[str]) -> int:
 
     try:
         with poll_lock(data_dir() / "poll.lock"):
-            errors = poll(
+            result = poll(
                 properties,
                 redeploy=redeploy,
                 telegram_api=os.environ.get("DOKKU_AUTO_DEPLOY_TELEGRAM_API", TELEGRAM_API),
@@ -245,7 +247,9 @@ def _poll(properties: Properties, redeploy: list[str]) -> int:
             return EXIT_ERROR
         logging.getLogger(__name__).info("%s, skipping this run", exc)
         return EXIT_OK
-    return EXIT_ERROR if errors else EXIT_OK
+    if result.errors:  # A tool error hides a failed deploy: it needs fixing before anything else
+        return EXIT_ERROR
+    return EXIT_DEPLOY_FAILED if result.failed_deploys else EXIT_OK
 
 
 def _schedule_rows(properties: Properties) -> list[tuple[str, str]]:

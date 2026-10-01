@@ -18,6 +18,7 @@ import json
 import logging
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
@@ -35,6 +36,12 @@ logger = logging.getLogger(__name__)
 Action = Literal["skip", "wait", "ci_failed", "deploy"]
 OutputCallback = Callable[[bytes], object]
 STATE_KEY = "state"
+
+
+@dataclass
+class PollResult:
+    errors: int = 0  # Apps that couldn't be handled (invalid config, API errors etc.)
+    failed_deploys: int = 0
 
 
 class PollRunning(RuntimeError):
@@ -148,7 +155,8 @@ def process_app(
     telegram_api: str,
     redeploy: bool,
     on_output: OutputCallback | None,
-) -> None:
+) -> bool:
+    """Handle one app; returns False only when a deploy was attempted and failed."""
     app, branch = config.app, config.branch
     sha = forge.branch_head(branch)
     previous = load_state(properties, app)
@@ -160,21 +168,21 @@ def process_app(
         ci = forge.ci_status(sha, branch, config.workflow)
     action = decide(sha, current, ci)
     if action == "skip":
-        return
+        return True
     if action == "wait":
         if redeploy:
             logger.info("[%s] %s@%s: redeploy requested, but its CI hasn't passed yet: waiting", app, branch, sha[:8])
         else:
             logger.debug("[%s] %s@%s: waiting for CI", app, branch, sha[:8])
-        return
+        return True
     if action == "ci_failed":
         logger.info("[%s] %s@%s: CI failed, not deploying", app, branch, sha[:8])
         record(properties, app, sha, "ci_failed", last_deployed)
-        return
+        return True
     lock = dokku.lock_state(app)
     if lock in ("manual", "deploying"):
         logger.info("[%s] %s@%s: app locked (deploy in progress or apps:lock), waiting", app, branch, sha[:8])
-        return
+        return True
     if lock == "orphan":
         logger.warning(
             "[%s] deploy lock left behind by a failed deploy, deploying anyway (remove it with: dokku apps:unlock %s)",
@@ -184,7 +192,7 @@ def process_app(
     if not redeploy and dokku.runs_commit(app, sha):
         logger.info("[%s] %s@%s: app already runs this commit, recorded without rebuilding", app, branch, sha[:8])
         record(properties, app, sha, "deployed", sha)
-        return
+        return True
     logger.info("[%s] deploying %s@%s", app, branch, sha[:8])
     success, output, timed_out = dokku.git_sync(app, config.repository.clone_url, sha, on_output)
     if timed_out:
@@ -192,7 +200,7 @@ def process_app(
         logger.error("[%s] deploy timed out; the app may stay locked (dokku apps:unlock %s)", app, app)
     elif not success and dokku.is_locked(app):
         logger.info("[%s] app got locked during our deploy attempt, will retry", app)
-        return
+        return True
     status = "deployed" if success else "deploy_failed"
     logger.info("[%s] %s: %s", app, sha[:8], status)
     # Recorded before notifying: whatever happens while notifying, this deploy must not run again
@@ -202,6 +210,7 @@ def process_app(
             notify_deploy(config, forge, sha, success, output, last_deployed, telegram_token, telegram_api)
         except Exception as exc:
             logger.warning("[%s] notification failed: %s", app, exc)
+    return success
 
 
 @contextmanager
@@ -221,22 +230,24 @@ def poll(
     redeploy: Iterable[str] = (),
     telegram_api: str = TELEGRAM_API,
     on_output: OutputCallback | None = None,
-) -> int:
-    """Run one cycle over every configured app; returns how many apps failed (invalid config, API errors etc.).
+) -> PollResult:
+    """Run one cycle over every configured app; returns how many apps couldn't be handled and how many deploys failed.
 
     Apps are independent: an error in one is logged and the others still run. Each app's state is saved as soon as
     it is handled, so an interruption keeps what was already done.
     """
     redeploy_apps = set(redeploy)
     telegram_token = properties.get(GLOBAL, "telegram-bot-token")
-    errors = 0
+    result = PollResult()
     for app in configured_apps(properties):
         try:
             config = load_app(properties, app)
-            process_app(
+            deploy_ok = process_app(
                 config, forge_for(config), properties, telegram_token, telegram_api, app in redeploy_apps, on_output
             )
         except Exception as exc:
-            errors += 1
+            result.errors += 1
             logger.error("[%s] %s", app, exc)
-    return errors
+        else:
+            result.failed_deploys += not deploy_ok
+    return result

@@ -107,7 +107,7 @@ def test_deploy_cycle(dokku_env, fake_api, fake_dokku):
     fake_api.routes[f"GET {API}/pulls"] = (200, [pull(8, "c3"), pull(7, "c1")])
     fake_api.routes[f"POST {API}/issues/8/comments"] = (201, {})
     fake_dokku.set()
-    assert poll(dokku_env.properties) == 0
+    assert poll(dokku_env.properties).errors == 0
     assert fake_dokku.syncs == [f"git:sync --build proj-stg {fake_api.url}/Org/proj.git c3"]
     assert [path for path, _ in fake_api.posts()] == [f"{API}/issues/8/comments"]
     assert load_state(dokku_env.properties, "proj-stg")["deployed_sha"] == "c3"
