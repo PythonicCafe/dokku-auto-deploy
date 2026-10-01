@@ -6,7 +6,7 @@ import json
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Literal
+from typing import IO, Any, Literal
 
 HTTP_TIMEOUT = 30
 
@@ -17,6 +17,32 @@ CIStatus = Literal["missing", "pending", "success", "failure"]
 
 class ForgeError(RuntimeError):
     pass
+
+
+class _CredentialSafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """urllib copies every header to the redirect target: drop the credentials when it's another origin (host, port
+    or scheme), so a redirect can't send the token elsewhere or over plain HTTP."""
+
+    CREDENTIAL_HEADERS = ("Authorization", "Private-token")  # As `Request` stores them (`str.capitalize`)
+
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: IO[bytes],
+        code: int,
+        msg: str,
+        headers: http.client.HTTPMessage,
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        old_origin = urllib.parse.urlsplit(req.full_url)[:2]
+        if new is not None and urllib.parse.urlsplit(newurl)[:2] != old_origin:
+            for name in self.CREDENTIAL_HEADERS:
+                new.remove_header(name)
+        return new
+
+
+_opener = urllib.request.build_opener(_CredentialSafeRedirectHandler)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -53,7 +79,7 @@ class Forge:
             headers["Content-Type"] = "application/json"
         request = urllib.request.Request(url, data=data, method=method, headers=headers)
         try:
-            with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT) as response:
+            with _opener.open(request, timeout=HTTP_TIMEOUT) as response:
                 return json.load(response)
         except urllib.error.HTTPError as exc:
             raise ForgeError(f"{self.name} API {method} {path}: HTTP {exc.code} {_error_message(exc)}") from None

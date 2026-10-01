@@ -125,3 +125,10 @@ def test_deploy_cycle(dokku_env, fake_api, fake_dokku):
     assert path == f"{API}/merge_requests/5/notes"
     assert f"({fake_api.url}/group/sub/proj/-/commit/c3)" in body["body"]
     assert load_state(dokku_env.properties, "proj-stg")["deployed_sha"] == "c3"
+
+
+def test_redirect_to_another_origin_drops_the_private_token(gitlab, fake_api, other_api):
+    fake_api.redirects[f"GET {API}/repository/branches/main"] = f"{other_api.url}/elsewhere"
+    other_api.routes["GET /elsewhere"] = (200, {"commit": {"id": "abc"}})
+    assert gitlab.branch_head("main") == "abc"
+    assert "Private-Token" not in other_api.headers[0]

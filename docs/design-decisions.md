@@ -216,6 +216,11 @@ fine-grained GitHub token is bound to a single owner (user or organization): pri
 owners on the same server need a classic token or a bot user with access to all of them. A per-repository token was
 not implemented because putting it in the `git:sync` URL would expose it in `ps`.
 
+The token goes in a request header (`Authorization`, or `PRIVATE-TOKEN` on GitLab), never in a URL. urllib copies every
+header when it follows a redirect, so the forge client drops them when a redirect leaves the original origin (host,
+port or scheme): a redirect can't send the token to another host or downgrade it to plain HTTP. An `http://`
+repository URL is accepted for internal forges, and then the token does travel in clear text.
+
 ## Prior art
 
 Checked in 2026-09: `pmac/dokku-webhook-deploy`, `mitigate-dev/deployer`, `signalwire-demos/dokku-deploy-system` and

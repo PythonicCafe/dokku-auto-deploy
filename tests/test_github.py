@@ -100,3 +100,17 @@ def test_broken_answers_are_forge_errors(github, fake_api, response, message):
     fake_api.routes["GET /api/v3/repos/Org/proj/branches/main"] = response
     with pytest.raises(ForgeError, match=message):
         github.branch_head("main")
+
+
+class TestRedirects:
+    def test_same_origin_redirect_keeps_the_token(self, github, fake_api):
+        fake_api.redirects["GET /api/v3/repos/Org/proj/branches/main"] = f"{fake_api.url}/api/v3/repositories/1/main"
+        fake_api.routes["GET /api/v3/repositories/1/main"] = (200, {"commit": {"sha": "abc"}})
+        assert github.branch_head("main") == "abc"
+        assert fake_api.headers[-1]["Authorization"] == "Bearer TOKEN"
+
+    def test_redirect_to_another_origin_drops_the_token(self, github, fake_api, other_api):
+        fake_api.redirects["GET /api/v3/repos/Org/proj/branches/main"] = f"{other_api.url}/elsewhere"
+        other_api.routes["GET /elsewhere"] = (200, {"commit": {"sha": "abc"}})
+        assert github.branch_head("main") == "abc"
+        assert "Authorization" not in other_api.headers[0]

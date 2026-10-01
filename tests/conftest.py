@@ -28,6 +28,7 @@ class FakeAPI:
         self.requests: list[tuple[str, str, dict[str, str], Any]] = []
         self.headers: list[dict[str, str]] = []
         self.response_delay = 0.0
+        self.redirects: dict[str, str] = {}  # "METHOD /path" -> URL answered with a 302
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
 
@@ -49,6 +50,12 @@ class FakeAPI:
                 api.requests.append((method, parsed.path, query, body))
                 api.headers.append(dict(self.headers))
                 time.sleep(api.response_delay)
+                if f"{method} {parsed.path}" in api.redirects:
+                    self.send_response(302)
+                    self.send_header("Location", api.redirects[f"{method} {parsed.path}"])
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
                 status, payload = api.routes.get(f"{method} {parsed.path}", (404, {"message": "Not Found"}))
                 if status == 0:  # Drop the connection without answering
                     self.close_connection = True
@@ -72,14 +79,24 @@ class FakeAPI:
         return [(path, body) for method, path, _, body in self.requests if method == "POST" and path.startswith(prefix)]
 
 
-@pytest.fixture
-def fake_api() -> Iterator[FakeAPI]:
+def _serve() -> Iterator[FakeAPI]:
     api = FakeAPI()
     thread = threading.Thread(target=api.server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
     thread.start()
     yield api
     api.server.shutdown()
     api.server.server_close()
+
+
+@pytest.fixture
+def fake_api() -> Iterator[FakeAPI]:
+    yield from _serve()
+
+
+@pytest.fixture
+def other_api() -> Iterator[FakeAPI]:
+    """A second server, on another port: another origin for redirect tests."""
+    yield from _serve()
 
 
 FAKE_DOKKU = """#!/bin/sh
