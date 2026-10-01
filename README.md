@@ -48,10 +48,10 @@ For each app with a `repository` set, every run:
 
 What was handled is shown by `dokku auto-deploy:report <app>`:
 
-- `last handled`: the last branch head the plugin acted on, what happened to it (`deployed`, `deploy_failed` or
-  `ci_failed`) and when. A new run only acts again when the head changes, or when the CI of a `ci_failed` head passes
-  on a re-run.
-- `last deployed`: the last commit deployed successfully. It differs from the handled one after a failed deploy, and
+- `last sha`, `last status`, `last at`: the last branch head the plugin acted on, what happened to it (`deployed`,
+  `deploy_failed` or `ci_failed`) and when. A new run only acts again when the head changes, or when the CI of a
+  `ci_failed` head passes on a re-run.
+- `deployed sha`: the last commit deployed successfully. It differs from the handled one after a failed deploy, and
   it bounds which merged pull/merge requests get a comment on the next successful deploy.
 
 Losing that state is harmless: apps already running the branch head are only recorded, not rebuilt.
@@ -190,8 +190,21 @@ dokku auto-deploy:set site-prd notify telegram
 dokku auto-deploy:report                                               # check everything
 ```
 
-`dokku auto-deploy:set <app>|--global <key>` without a value unsets the key. `report` shows where each value comes
-from (`(global)` when inherited) and a `problem:` line if the app's settings are incomplete.
+`dokku auto-deploy:set <app>|--global <key>` without a value unsets the key.
+
+`report` follows Dokku's report conventions. For each key that can be set in both places it shows the app's own value
+(`Auto deploy workflow`), the global one (`Auto deploy global workflow`) and the one in effect, defaults included
+(`Auto deploy computed workflow`). It also shows the login of the token used for the repository host
+(`Auto deploy forge login`, from `dokku git:auth`), a `problem` line when the app's settings are incomplete, and the
+last handled and deployed commits:
+
+```sh
+dokku auto-deploy:report myproject-stg                                   # one app
+dokku auto-deploy:report myproject-stg --format json
+dokku auto-deploy:report myproject-stg --auto-deploy-computed-workflow   # only that value
+dokku auto-deploy:report --global                                        # global settings and schedule
+dokku auto-deploy:report --format json                                   # every app, one object keyed by app name
+```
 
 | Key | Scope | Meaning |
 |---|---|---|
@@ -353,7 +366,8 @@ waiting for a manual job counts as still running, so the deploy waits for it.
 
 ```text
 dokku auto-deploy:set <app>|--global <key> [<value>]      set a setting, or unset it when no value is given
-dokku auto-deploy:report [<app>|--global]                 show settings and the last handled commit
+dokku auto-deploy:report [<app>|--global] [--format stdout|json] [--auto-deploy-<name>]
+                                                          show settings and the last handled commit
 dokku auto-deploy:poll [--redeploy <app>] [--verbose]     deploy every configured app whose branch head passed CI
 dokku auto-deploy:notify-test <app> [--pull-request <n>]  send a test Telegram message and optionally a test comment
 dokku auto-deploy:schedule [systemd|cron|none]           show or choose what runs poll every minute

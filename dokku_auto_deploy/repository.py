@@ -72,14 +72,25 @@ class Repository:
         return f"{parts.scheme}://{parts.netloc}/api/v3"  # GitHub Enterprise Server
 
 
-def netrc_password(path: Path, host: str) -> str | None:
-    """Password stored for `host` in the netrc file at `path` (what `dokku git:auth <host> <user>` writes)."""
+def _netrc_entry(path: Path, host: str) -> tuple[str, str] | None:
     try:
         entry = netrc.netrc(str(path)).authenticators(host)
     except FileNotFoundError:
         return None
     except netrc.NetrcParseError as exc:
         raise RepositoryError(f"cannot read {path}: {exc.msg} (line {exc.lineno})") from None
-    if entry is None:
+    if entry is None or not entry[2]:
         return None
-    return entry[2] or None
+    return entry[0], entry[2]
+
+
+def netrc_password(path: Path, host: str) -> str | None:
+    """Password stored for `host` in the netrc file at `path` (what `dokku git:auth <host> <user>` writes)."""
+    entry = _netrc_entry(path, host)
+    return entry[1] if entry else None
+
+
+def netrc_login(path: Path, host: str) -> str | None:
+    """Login stored with that password: says which account the token belongs to, without showing the token."""
+    entry = _netrc_entry(path, host)
+    return entry[0] if entry else None

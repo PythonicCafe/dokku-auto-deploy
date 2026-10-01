@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import re
 import subprocess
@@ -222,52 +223,118 @@ class TestPluginScripts:
 
 class TestReport:
     def configure(self, dokku_env):
+        dokku_env.git_auth("github.com", "GH", login="the-bot")
         dokku_env.configure(
             "proj-stg", repository="https://github.com/Org/proj", branch="develop", telegram_chat="-100_9"
         )
         dokku_env.configure(GLOBAL, workflow=WORKFLOW, notify="telegram", telegram_bot_token="123:SECRET")
         save_state(
-            dokku_env.properties, "proj-stg", {"sha": "c3", "status": "deployed", "at": "T", "deployed_sha": "c3"}
+            dokku_env.properties, "proj-stg", {"sha": "c3", "status": "deployed", "at": "T", "deployed_sha": "c2"}
         )
 
-    def test_everything(self, dokku_env, fake_dokku, capsys):
+    def test_app_in_dokku_layout(self, dokku_env, fake_dokku, capsys):
         self.configure(dokku_env)
-        fake_dokku.set_timer("enabled")
-        dokku_env.configure("not-configured", branch="main")
-        assert main(["auto-deploy:report"]) == 0
+        assert main(["auto-deploy:report", "proj-stg"]) == 0
         out = capsys.readouterr().out
         assert "SECRET" not in out
-        assert [" ".join(line.split()) for line in out.splitlines()] == [
-            "=====> auto-deploy global settings",
-            f"workflow: {WORKFLOW}",
-            "notify: telegram",
-            "telegram-chat:",
-            "telegram-bot-token: set",
-            "cron: off",
-            "systemd timer: enabled",
-            "=====> proj-stg auto-deploy information",
-            "repository: https://github.com/Org/proj",
-            "branch: develop",
-            "forge:",
-            f"workflow: {WORKFLOW} (global)",
-            "notify: telegram (global)",
-            "telegram-chat: -100_9",
-            "last handled: c3 deployed T",
-            "last deployed: c3",
+        lines = out.splitlines()
+        assert lines[0] == "=====> proj-stg auto-deploy information"
+        # Labels padded to the longest flag, as Dokku does: len("--auto-deploy-global-telegram-bot-token-set")
+        assert lines[1] == "       " + "Auto deploy branch:".ljust(43) + "develop"
+        assert [" ".join(line.split()) for line in lines[1:]] == [
+            "Auto deploy branch: develop",
+            "Auto deploy computed forge: github",
+            "Auto deploy computed notify: telegram",
+            "Auto deploy computed telegram chat: -100_9",
+            f"Auto deploy computed workflow: {WORKFLOW}",
+            "Auto deploy deployed sha: c2",
+            "Auto deploy enabled: true",
+            "Auto deploy forge:",
+            "Auto deploy forge login: the-bot",
+            "Auto deploy global notify: telegram",
+            "Auto deploy global telegram bot token set: true",
+            "Auto deploy global telegram chat:",
+            f"Auto deploy global workflow: {WORKFLOW}",
+            "Auto deploy last at: T",
+            "Auto deploy last sha: c3",
+            "Auto deploy last status: deployed",
+            "Auto deploy notify:",
+            "Auto deploy problem:",
+            "Auto deploy repository: https://github.com/Org/proj",
+            "Auto deploy telegram chat: -100_9",
+            "Auto deploy workflow:",
         ]
+
+    def test_json(self, dokku_env, fake_dokku, capsys):
+        self.configure(dokku_env)
+        assert main(["auto-deploy:report", "proj-stg", "--format", "json"]) == 0
+        data = json.loads(capsys.readouterr().out)
+        assert (data["computed-workflow"], data["workflow"], data["forge-login"]) == (WORKFLOW, "", "the-bot")
+
+    def test_all_apps_json_is_keyed_by_app(self, dokku_env, fake_dokku, capsys):
+        self.configure(dokku_env)
+        dokku_env.configure("not-configured", branch="main")
+        assert main(["auto-deploy:report", "--format", "json"]) == 0
+        data = json.loads(capsys.readouterr().out)
+        assert list(data) == ["proj-stg"]
+        assert data["proj-stg"]["last-sha"] == "c3"
+
+    def test_defaults_are_computed(self, dokku_env, fake_dokku, capsys):
+        dokku_env.configure("site", repository="https://gitlab.com/g/site", branch="main")
+        assert main(["auto-deploy:report", "site", "--format", "json"]) == 0
+        data = json.loads(capsys.readouterr().out)
+        assert (data["computed-workflow"], data["computed-notify"], data["computed-forge"]) == (
+            "none",
+            "none",
+            "gitlab",
+        )
+        assert (data["forge-login"], data["global-telegram-bot-token-set"]) == ("", "false")
+
+    @pytest.mark.parametrize(
+        "argv, expected",
+        [
+            pytest.param(["proj-stg", "--auto-deploy-computed-workflow"], WORKFLOW, id="app"),
+            pytest.param(["--auto-deploy-last-sha", "proj-stg"], "c3", id="flag-first"),
+            pytest.param(["--global", "--auto-deploy-global-notify"], "telegram", id="global"),
+        ],
+    )
+    def test_single_value(self, dokku_env, fake_dokku, capsys, argv, expected):
+        self.configure(dokku_env)
+        assert main(["auto-deploy:report", *argv]) == 0
+        assert capsys.readouterr().out == f"{expected}\n"
+
+    def test_invalid_flag_lists_the_valid_ones(self, dokku_env, fake_dokku, capsys):
+        self.configure(dokku_env)
+        assert main(["auto-deploy:report", "proj-stg", "--auto-deploy-bogus"]) == 2
+        assert "--auto-deploy-computed-workflow" in capsys.readouterr().err
+
+    def test_global(self, dokku_env, fake_dokku, capsys):
+        self.configure(dokku_env)
+        fake_dokku.set_timer("enabled")
+        assert main(["auto-deploy:report", "--global", "--format", "json"]) == 0
+        assert json.loads(capsys.readouterr().out) == {
+            "global-notify": "telegram",
+            "global-telegram-bot-token-set": "true",
+            "global-telegram-chat": "",
+            "global-workflow": WORKFLOW,
+            "schedule-cron": "false",
+            "systemd-timer": "enabled",
+        }
 
     def test_problem_is_shown(self, dokku_env, fake_dokku, capsys):
         self.configure(dokku_env)
         dokku_env.properties.delete("proj-stg", "telegram-chat")
-        assert main(["auto-deploy:report", "proj-stg"]) == 0
-        lines = [" ".join(line.split()) for line in capsys.readouterr().out.splitlines()]
-        assert "problem: telegram-chat is not set (dokku auto-deploy:set <app>|--global telegram-chat" in "\n".join(
-            lines
-        )
+        assert main(["auto-deploy:report", "proj-stg", "--auto-deploy-problem"]) == 0
+        assert capsys.readouterr().out.startswith("telegram-chat is not set (dokku auto-deploy:set")
 
     def test_unconfigured_app(self, dokku_env, capsys):
         assert main(["auto-deploy:report", "nope"]) == 3
         assert "not configured for nope" in capsys.readouterr().err
+
+    def test_other_unknown_options_are_errors(self, capsys):
+        with pytest.raises(SystemExit) as exc:
+            parse_args(["auto-deploy:report", "--bogus"])
+        assert exc.value.code == 2
 
 
 @pytest.fixture

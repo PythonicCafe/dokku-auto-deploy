@@ -57,11 +57,16 @@ def create_parser() -> argparse.ArgumentParser:
 
     report = commands.add_parser(
         f"{PREFIX}report",
-        help="Show settings and last deploy of the configured apps, or of one app",
-        description="Show the resolved settings (with where each value comes from) and the state of the last "
-        "handled commit. Without arguments, shows the global settings and every configured app.",
+        usage="dokku auto-deploy:report [<app>|--global] [--format stdout|json] [--auto-deploy-<name>]",
+        help="Show settings and last handled commit of every configured app, of one app, or global settings",
+        description="Show each app's settings (its own value, the global one and the one in effect, `computed`), "
+        "the token's login and the last handled and deployed commits. Without an app, every configured app; with "
+        "--global, the global settings and the schedule.",
+        epilog="--auto-deploy-<name> prints only that value, e.g. --auto-deploy-computed-workflow. With --format "
+        "json, all apps come as one object keyed by app name.",
     )
-    report.add_argument("target", metavar="app|--global", nargs="?", help="Only this app, or only global settings")
+    report.add_argument("target", metavar="app", nargs="?", help="Only this app")
+    report.add_argument("--format", choices=("stdout", "json"), default="stdout", help="Output format")
 
     poll = commands.add_parser(
         f"{PREFIX}poll",
@@ -109,13 +114,29 @@ def create_parser() -> argparse.ArgumentParser:
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
-    """`set` and `report` only take positionals, and some of them start with a dash: `--global` and Telegram chat
-    ids like `-100123_45` (argparse only accepts plain negative numbers as values). A `--` after the command makes
-    argparse read them as values; `-h`/`--help` still work."""
-    only_positionals = (f"{PREFIX}set", f"{PREFIX}report")
-    if argv and argv[0] in only_positionals and not {"-h", "--help"} & set(argv[1:]):
+    """Two Dokku conventions argparse doesn't know:
+
+    - `set` only takes positionals, and some start with a dash: `--global` and Telegram chat ids like `-100123_45`
+      (argparse only accepts plain negative numbers as values). A `--` after the command makes argparse read them as
+      values; `-h`/`--help` still work.
+    - `report` takes `--global` in place of the app, and any `--auto-deploy-<name>` flag to print one value.
+    """
+    parser = create_parser()
+    if argv and argv[0] == f"{PREFIX}set" and not {"-h", "--help"} & set(argv[1:]):
         argv = [argv[0], "--", *argv[1:]]
-    return create_parser().parse_args(argv)
+    args, unknown = parser.parse_known_args(argv)
+    args.info_flag = None
+    if args.command == f"{PREFIX}report":
+        for item in unknown:
+            if item == GLOBAL and args.target is None:
+                args.target = GLOBAL
+            elif item.startswith("--auto-deploy-") and args.info_flag is None:
+                args.info_flag = item
+            else:
+                parser.error(f"unrecognized argument: {item}")
+    elif unknown:
+        parser.error(f"unrecognized arguments: {' '.join(unknown)}")
+    return args
 
 
 def _stdin_is_terminal() -> bool:
@@ -162,56 +183,35 @@ def _print_rows(title: str, rows: list[tuple[str, str]]) -> None:
         print(f"       {label + ':':<{width}}{value}")
 
 
-def _report_global(properties: Properties) -> None:
-    from dokku_auto_deploy.settings import KEYS
-
-    rows = []
-    for key in KEYS.values():
-        if key.scope == "app":
-            continue
-        value = properties.get(GLOBAL, key.name)
-        if key.secret:
-            rows.append((key.name, "set" if value else "not set"))
-        else:
-            rows.append((key.name, value or ""))
-    _print_rows("auto-deploy global settings", rows + _schedule_rows(properties))
-
-
-def _report_app(properties: Properties, app: str) -> None:
-    from dokku_auto_deploy.poll import load_state
-    from dokku_auto_deploy.settings import KEYS, ConfigError, load_app, value_and_origin
-
-    rows = []
-    for key in KEYS.values():
-        if key.scope == "global":
-            continue
-        value, origin = value_and_origin(properties, app, key.name)
-        rows.append((key.name, f"{value} (global)" if origin == "global" else value or ""))
-    try:
-        load_app(properties, app)
-    except ConfigError as exc:
-        rows.append(("problem", str(exc)))
-    state = load_state(properties, app) or {}
-    rows.append(("last handled", " ".join(str(state.get(field) or "") for field in ("sha", "status", "at")).strip()))
-    rows.append(("last deployed", str(state.get("deployed_sha") or "")))
-    _print_rows(f"{app} auto-deploy information", rows)
-
-
-def _report(properties: Properties, target: str | None) -> int:
+def _report(properties: Properties, target: str | None, output_format: str, info_flag: str | None) -> int:
+    from dokku_auto_deploy.report import FLAG_PREFIX, app_report, flags, global_report, render_json, render_text
     from dokku_auto_deploy.settings import configured_apps
 
-    if target == GLOBAL:
-        _report_global(properties)
+    if target is not None and target != GLOBAL and properties.get(target, "repository") is None:
+        print(f"Error: auto-deploy is not configured for {target} (no repository set)", file=sys.stderr)
+        return EXIT_CONFIG
+    if target is None:
+        if info_flag is not None:
+            print("Error: --auto-deploy-<name> needs an app (or --global)", file=sys.stderr)
+            return EXIT_USAGE
+        reports = {app: app_report(properties, app) for app in configured_apps(properties)}
+        if output_format == "json":
+            print(render_json(reports))
+        else:
+            for app, values in reports.items():
+                print(render_text(f"{app} auto-deploy information", values))
         return EXIT_OK
-    if target is not None:
-        if properties.get(target, "repository") is None:
-            print(f"Error: auto-deploy is not configured for {target} (no repository set)", file=sys.stderr)
-            return EXIT_CONFIG
-        _report_app(properties, target)
-        return EXIT_OK
-    _report_global(properties)
-    for app in configured_apps(properties):
-        _report_app(properties, app)
+    values = global_report(properties) if target == GLOBAL else app_report(properties, target)
+    if info_flag is not None:
+        if info_flag not in flags(values):
+            print(f"Error: invalid flag {info_flag}, valid flags: {', '.join(flags(values))}", file=sys.stderr)
+            return EXIT_USAGE
+        print(values[info_flag.removeprefix(FLAG_PREFIX)])
+    elif output_format == "json":
+        print(render_json(values))
+    else:
+        title = "auto-deploy global information" if target == GLOBAL else f"{target} auto-deploy information"
+        print(render_text(title, values))
     return EXIT_OK
 
 
@@ -351,7 +351,7 @@ def main(argv: list[str] | None = None) -> int:
         if command == "set":
             return _set(properties, args.target, args.key, args.value)
         if command == "report":
-            return _report(properties, args.target)
+            return _report(properties, args.target, args.format, args.info_flag)
         if command == "poll":
             return _poll(properties, args.redeploy)
         if command == "schedule":
