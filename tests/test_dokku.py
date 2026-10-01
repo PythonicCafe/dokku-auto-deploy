@@ -2,7 +2,8 @@ import sys
 
 import pytest
 
-from dokku_auto_deploy.dokku import app_exists, app_url, git_sync, is_locked, run_streaming, runs_commit
+from dokku_auto_deploy.dokku import app_exists, app_url, git_sync, is_locked, lock_state, run_streaming, runs_commit
+from tests.conftest import FAKE_APP
 
 
 def test_run_streaming_returns_output_and_code_while_streaming():
@@ -18,11 +19,26 @@ def test_run_streaming_kills_on_timeout():
     assert output.startswith("start\n") and "killed after 1s" in output
 
 
-def test_is_locked(fake_dokku):
-    fake_dokku.set(locked=True)
-    assert is_locked("app") is True
-    fake_dokku.set(locked=False)
-    assert is_locked("app") is False
+class TestLockState:
+    @pytest.mark.parametrize(
+        ("lock", "state", "locked"),
+        [
+            (None, "free", False),
+            ("manual", "manual", True),
+            ("deploying", "deploying", True),
+            ("orphan", "orphan", False),
+        ],
+    )
+    def test_lock_file_meaning(self, fake_dokku, lock, state, locked):
+        fake_dokku.set(lock=lock)
+        assert lock_state(FAKE_APP) == state
+        assert is_locked(FAKE_APP) is locked
+
+    def test_build_id_missing_from_builds_list_counts_as_deploying(self, fake_dokku):
+        """Like Dokku before 0.38, which has no `builds:list`: without the record, waiting is the safe side."""
+        fake_dokku.set(lock="orphan")
+        (fake_dokku.directory / "builds.json").write_text("[]")
+        assert lock_state(FAKE_APP) == "deploying"
 
 
 def test_git_sync_uses_exact_sha(fake_dokku):

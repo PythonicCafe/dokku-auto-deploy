@@ -99,15 +99,17 @@ def other_api() -> Iterator[FakeAPI]:
     yield from _serve()
 
 
+FAKE_APP = "proj-stg"  # The app whose lock file `FakeDokku.set(lock=...)` writes
+
 FAKE_DOKKU = """#!/bin/sh
 echo "$@" >> "$FAKE_DOKKU_DIR/calls"
 case "$1" in
   apps:exists) [ -f "$FAKE_DOKKU_DIR/missing-$2" ] && exit 20 || exit 0 ;;
-  apps:locked) [ -f "$FAKE_DOKKU_DIR/locked" ] && exit 0 || exit 1 ;;
+  builds:list) cat "$FAKE_DOKKU_DIR/builds.json" 2>/dev/null || echo "[]"; exit 0 ;;
   apps:report) cat "$FAKE_DOKKU_DIR/deploy-source" 2>/dev/null; echo; exit 0 ;;
   url) cat "$FAKE_DOKKU_DIR/url" 2>/dev/null; exit 0 ;;
   git:sync)
-    [ -f "$FAKE_DOKKU_DIR/lock-during-sync" ] && touch "$FAKE_DOKKU_DIR/locked"
+    [ -f "$FAKE_DOKKU_DIR/lock-during-sync" ] && cp "$FAKE_DOKKU_DIR/lock-during-sync" "$FAKE_LOCK_FILE"
     cat "$FAKE_DOKKU_DIR/output" 2>/dev/null
     exit "$(cat "$FAKE_DOKKU_DIR/exit-code" 2>/dev/null || echo 0)" ;;
 esac
@@ -115,16 +117,30 @@ esac
 
 
 class FakeDokku:
-    def __init__(self, directory: Path) -> None:
+    """State of the fake `dokku` command. Locks are real lock files, as Dokku writes them, for the app under test."""
+
+    BUILD_ID = "fakebuild1"
+
+    def __init__(self, directory: Path, lock_file: Path) -> None:
         self.directory = directory
+        self.lock_file = lock_file
+
+    def _lock_content(self, lock: str) -> str:
+        """ "manual": empty, like `apps:lock`; "deploying"/"orphan": a build id that is running, or not anymore."""
+        if lock == "manual":
+            return ""
+        status = "running" if lock == "deploying" else "abandoned"
+        builds = [{"id": self.BUILD_ID, "status": "running", "display_status": status}]
+        (self.directory / "builds.json").write_text(json.dumps(builds))
+        return self.BUILD_ID + "\n"
 
     def set(
         self,
         *,
         exit_code: int = 0,
         output: str = "",
-        locked: bool = False,
-        lock_during_sync: bool = False,
+        lock: str | None = None,
+        lock_during_sync: str | None = None,
         deploy_source: str = "",
         url: str = "",
     ) -> None:
@@ -132,12 +148,16 @@ class FakeDokku:
         (self.directory / "exit-code").write_text(str(exit_code))
         (self.directory / "output").write_text(output)
         (self.directory / "deploy-source").write_text(deploy_source)
-        for flag, enabled in (("locked", locked), ("lock-during-sync", lock_during_sync)):
-            path = self.directory / flag
-            if enabled:
-                path.touch()
-            else:
-                path.unlink(missing_ok=True)
+        self.lock_file.parent.mkdir(parents=True, exist_ok=True)
+        if lock is None:
+            self.lock_file.unlink(missing_ok=True)
+        else:
+            self.lock_file.write_text(self._lock_content(lock))
+        during_sync = self.directory / "lock-during-sync"
+        if lock_during_sync is None:
+            during_sync.unlink(missing_ok=True)
+        else:
+            during_sync.write_text(self._lock_content(lock_during_sync))
 
     def set_timer(self, state: str | None) -> None:
         """systemd timer state: "enabled", "disabled", or None when not installed."""
@@ -197,9 +217,13 @@ def fake_dokku(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeDokku:
         script.chmod(script.stat().st_mode | stat.S_IEXEC)
     state_dir = tmp_path / "fake-dokku"
     state_dir.mkdir()
+    lib_root = tmp_path / "var-lib-dokku"  # Same as `dokku_env`
+    lock_file = lib_root / "data" / "apps" / FAKE_APP / ".deploy.lock"
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.setenv("FAKE_DOKKU_DIR", str(state_dir))
-    return FakeDokku(state_dir)
+    monkeypatch.setenv("FAKE_LOCK_FILE", str(lock_file))
+    monkeypatch.setenv("DOKKU_LIB_ROOT", str(lib_root))
+    return FakeDokku(state_dir, lock_file)
 
 
 class DokkuEnv:

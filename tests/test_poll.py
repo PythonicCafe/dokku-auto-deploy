@@ -179,7 +179,7 @@ class TestPoll:
 
     def test_locked_app_is_left_alone(self, app_env, fake_api, fake_dokku):
         github_state(fake_api)
-        fake_dokku.set(locked=True)
+        fake_dokku.set(lock="deploying")
         write_state(app_env, sha="c1", status="deployed", deployed_sha="c1")
         assert do_poll(app_env, fake_api) == 0
         assert fake_dokku.syncs == []
@@ -188,12 +188,29 @@ class TestPoll:
 
     def test_lock_taken_during_our_sync_is_not_our_failure(self, app_env, fake_api, fake_dokku):
         github_state(fake_api)
-        fake_dokku.set(exit_code=1, lock_during_sync=True)
+        fake_dokku.set(exit_code=1, lock_during_sync="deploying")
         write_state(app_env, sha="c1", status="deployed", deployed_sha="c1")
         assert do_poll(app_env, fake_api) == 0
         assert len(fake_dokku.syncs) == 1
         assert read_state(app_env)["sha"] == "c1"
         assert fake_api.posts() == []
+
+    def test_failed_build_that_leaves_an_orphan_lock_is_reported(self, app_env, fake_api, fake_dokku):
+        """Regression: Dokku keeps the lock file after a failed build; that isn't another deploy holding the app."""
+        github_state(fake_api)
+        fake_dokku.set(exit_code=1, lock_during_sync="orphan")
+        write_state(app_env, sha="c1", status="deployed", deployed_sha="c1")
+        do_poll(app_env, fake_api)
+        assert read_state(app_env)["status"] == "deploy_failed"
+        assert [path for path, _ in fake_api.posts() if path == "/botTG/sendMessage"]
+
+    def test_orphan_lock_does_not_block_the_next_deploy(self, app_env, fake_api, fake_dokku):
+        github_state(fake_api)
+        fake_dokku.set(lock="orphan")
+        write_state(app_env, sha="c1", status="deployed", deployed_sha="c1")
+        do_poll(app_env, fake_api)
+        assert len(fake_dokku.syncs) == 1
+        assert read_state(app_env)["status"] == "deployed"
 
     def test_redeploy_of_same_sha_skips_pr_comments_but_not_telegram(self, app_env, fake_api, fake_dokku):
         github_state(fake_api, pulls=[pr(10, "c3")])
@@ -330,7 +347,7 @@ class TestRecordBeforeNotifying:
 
 def test_locked_app_is_not_recorded_even_if_it_already_runs_the_head(app_env, fake_api, fake_dokku):
     github_state(fake_api)
-    fake_dokku.set(locked=True, deploy_source="https://example.com/Org/proj.git#c3")
+    fake_dokku.set(lock="manual", deploy_source="https://example.com/Org/proj.git#c3")
     write_state(app_env, sha="c1", status="deployed", deployed_sha="c1")
     assert do_poll(app_env, fake_api) == 0
     assert read_state(app_env)["sha"] == "c1"

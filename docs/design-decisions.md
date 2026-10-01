@@ -132,8 +132,8 @@ Checked in Dokku's source (2026-09): `apps:locked` only tests whether the app's 
 deploy (`receive-app`, used by both `git push` and `git:sync --build`) creates that file under `flock` in `exclusive`
 mode, fails immediately (it does not wait) if the lock is taken, and deletes the file when done. Consequences:
 
-- The tool checks `apps:locked` before deploying and waits while the app is locked (a deploy in progress, from anyone,
-  or a manual `apps:lock`).
+- The tool reads the lock file before deploying and waits while the app is locked (a deploy in progress, from anyone,
+  or a manual `apps:lock`). It reads the file instead of calling `apps:locked` because of the orphan lock below.
 - A manual `git push dokku` during an automatic deploy fails with "currently has a deploy lock", and vice versa. If
   `git:sync` fails and the app is locked right after, the tool treats it as a lost race: no state change, no
   notification, retry next cycle.
@@ -142,6 +142,20 @@ mode, fails immediately (it does not wait) if the lock is taken, and deletes the
 - A deploy killed without releasing the lock (`kill -9`, crash) leaves the file behind and the tool waits forever,
   logging it every cycle; `dokku apps:unlock <app>` fixes it. The tool never unlocks on its own: other tools we looked
   at do, which silently overrides manual deploys.
+
+Orphan lock after a failed build (checked on Dokku 0.38.28, 2026-09-30): when the build fails, Dokku's failure path
+(`dokku_log_fail`, which calls `exit 1`) runs before `release_app_deploy_lock`, so `.deploy.lock` stays behind holding
+the build id, and `apps:locked` keeps answering "Deploy lock exists". Nothing is blocked: the next deploy takes the
+`flock` normally and removes the file. A failed health check releases the lock correctly. Trusting `apps:locked` would
+make every failed build look like a lost race (never recorded, never notified) and then block the app forever. So the
+tool tells the cases apart by the file's content:
+
+- Empty: created by `apps:lock` (it writes an empty file). The tool waits.
+- A build id whose record in `dokku builds:list <app> --format json` (Dokku 0.38+) has `display_status` `running`: a
+  deploy in progress. The tool waits.
+- A build id whose record isn't running (Dokku shows the failed build as `abandoned`): an orphan. The tool deploys
+  anyway, logging a warning with the `apps:unlock` hint, and a failed `git:sync` that leaves one is a failed deploy.
+- A build id it can't find (no `builds:list`, before 0.38): treated as a deploy in progress, the safe side.
 
 ## Commits Dokku already runs are not rebuilt
 

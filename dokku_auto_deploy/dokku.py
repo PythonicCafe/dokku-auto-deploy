@@ -1,9 +1,13 @@
 """Calls to the local `dokku` CLI (the plugin runs as the dokku user on the Dokku host: no SSH key is involved)."""
 
+import json
 import signal
 import subprocess
 import threading
 from collections.abc import Callable
+from typing import Literal
+
+from dokku_auto_deploy.properties import lib_root
 
 DEPLOY_TIMEOUT = 60 * 60
 LOCK_CHECK_TIMEOUT = 60
@@ -42,10 +46,47 @@ def app_exists(app: str) -> bool:
     return result.returncode == 0
 
 
+LockState = Literal["free", "manual", "deploying", "orphan"]
+
+
+def lock_state(app: str) -> LockState:
+    """What the app's deploy lock file means (`<DOKKU_LIB_ROOT>/data/apps/<app>/.deploy.lock`).
+
+    `apps:locked` only says whether the file exists, which isn't enough: Dokku leaves it behind when a build fails (its
+    failure path exits before releasing the lock), and the file then blocks nothing but still looks locked. So:
+    - no file: "free";
+    - empty file: "manual", created by `apps:lock`;
+    - a build id whose record in `builds:list` is running: "deploying";
+    - a build id whose record isn't running (failed, abandoned): "orphan", a leftover that doesn't block deploys.
+    A build id that can't be looked up (Dokku before 0.38 has no `builds:list`) counts as "deploying", the safe side.
+    """
+    path = lib_root() / "data" / "apps" / app / ".deploy.lock"
+    try:
+        build_id = path.read_text().strip()
+    except FileNotFoundError:
+        return "free"
+    if not build_id:
+        return "manual"
+    result = subprocess.run(
+        ["dokku", "builds:list", app, "--format", "json"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=LOCK_CHECK_TIMEOUT,
+    )
+    try:
+        builds = json.loads(result.stdout) if result.returncode == 0 else []
+    except ValueError:
+        builds = []
+    for build in builds if isinstance(builds, list) else []:
+        if isinstance(build, dict) and build.get("id") == build_id:
+            return "deploying" if build.get("display_status") == "running" else "orphan"
+    return "deploying"
+
+
 def is_locked(app: str) -> bool:
-    """True while Dokku holds the app's deploy lock: a deploy in progress (from anyone) or a manual `apps:lock`."""
-    result = subprocess.run(["dokku", "apps:locked", app], capture_output=True, check=False, timeout=LOCK_CHECK_TIMEOUT)
-    return result.returncode == 0
+    """True while a deploy runs (from anyone) or the app is locked with `apps:lock`; an orphan lock file isn't."""
+    return lock_state(app) in ("manual", "deploying")
 
 
 def runs_commit(app: str, sha: str) -> bool:

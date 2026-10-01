@@ -366,7 +366,8 @@ a second deploy while one runs, so a manual `git push dokku` made during an auto
 a deploy lock in place"; push again when it finishes.
 
 If the log keeps saying an app is locked while no deploy is running (a deploy killed without releasing its lock, e.g.
-after a crash), release it with `dokku apps:unlock <app>`.
+after a crash), release it with `dokku apps:unlock <app>`. The lock file Dokku leaves behind after a failed build
+doesn't block the plugin: it logs a warning and deploys anyway.
 
 To stop deploying an app automatically: `dokku auto-deploy:set <app> repository` (unset). Failure comments include the
 last lines of the build log; on public repositories anyone can read them, so make sure your build does not print

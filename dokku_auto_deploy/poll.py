@@ -171,9 +171,16 @@ def process_app(
         logger.info("[%s] %s@%s: CI failed, not deploying", app, branch, sha[:8])
         record(properties, app, sha, "ci_failed", last_deployed)
         return
-    if dokku.is_locked(app):
+    lock = dokku.lock_state(app)
+    if lock in ("manual", "deploying"):
         logger.info("[%s] %s@%s: app locked (deploy in progress or apps:lock), waiting", app, branch, sha[:8])
         return
+    if lock == "orphan":
+        logger.warning(
+            "[%s] deploy lock left behind by a failed deploy, deploying anyway (remove it with: dokku apps:unlock %s)",
+            app,
+            app,
+        )
     if not redeploy and dokku.runs_commit(app, sha):
         logger.info("[%s] %s@%s: app already runs this commit, recorded without rebuilding", app, branch, sha[:8])
         record(properties, app, sha, "deployed", sha)

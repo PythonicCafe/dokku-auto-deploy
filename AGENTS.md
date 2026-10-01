@@ -70,8 +70,8 @@
 - Handled SHA (`sha` in the state): the last branch head the plugin acted on, whatever the result. `deployed_sha`: the
   last one that deployed successfully; it bounds which merged changes get notified.
 - Change: a merged pull request (GitHub, Forgejo) or merge request (GitLab).
-- Locked app: `dokku apps:locked` is true (a deploy in progress, manual or not, or a manual `apps:lock`). The plugin
-  waits; it never unlocks.
+- Locked app: a deploy in progress (manual or not) or a manual `apps:lock`, told apart by the lock file's content
+  (`dokku.lock_state`). The lock file a failed build leaves behind doesn't count. The plugin waits; it never unlocks.
 
 ## References
 
