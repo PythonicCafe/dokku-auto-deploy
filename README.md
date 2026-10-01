@@ -105,6 +105,9 @@ also gets the latest stable release; the tag pins a known version. New features 
 dokku plugin:update auto-deploy 0.2.0
 ```
 
+`plugin:update` replaces the code in place, so run it while no deploy is running (the log shows when one is): a run
+in progress could load parts of the new version.
+
 The plugin is named `auto-deploy` (Dokku drops the `dokku-` prefix of the repository name), so its commands are
 `dokku auto-deploy:*`. Installing and updating create systemd units that can run it every minute, disabled; choosing
 between them and cron is part of the setup below.
@@ -203,19 +206,22 @@ dokku auto-deploy:set --global workflow .github/workflows/ci.yml
 dokku auto-deploy:set --global notify comment,telegram
 dokku auto-deploy:set --global telegram-chat -1001234567890_42
 
-dokku auto-deploy:set myproject-stg repository https://github.com/PythonicCafe/myproject
 dokku auto-deploy:set myproject-stg branch develop
-dokku auto-deploy:set myproject-prd repository https://github.com/PythonicCafe/myproject
+dokku auto-deploy:set myproject-stg repository https://github.com/PythonicCafe/myproject
 dokku auto-deploy:set myproject-prd branch main
 dokku auto-deploy:set myproject-prd telegram-chat -1001234567890_7    # production goes to another topic
+dokku auto-deploy:set myproject-prd repository https://github.com/PythonicCafe/myproject
 
-dokku auto-deploy:set site-prd repository https://github.com/PythonicCafe/website
 dokku auto-deploy:set site-prd branch main
 dokku auto-deploy:set site-prd workflow none                          # no CI: overrides the global workflow
 dokku auto-deploy:set site-prd notify telegram
+dokku auto-deploy:set site-prd repository https://github.com/PythonicCafe/website
 
 dokku auto-deploy:report                                               # check everything
 ```
+
+Set `repository` last: it enables the app, so a scheduled run between two commands would already use the settings
+made so far (e.g. deploy without waiting for CI because `workflow` isn't set yet).
 
 `dokku auto-deploy:set <app>|--global <key>` without a value unsets the key.
 
