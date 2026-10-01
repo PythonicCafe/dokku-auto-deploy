@@ -151,10 +151,13 @@ Dokku writes `deploy-source-metadata` in the `deploy-source-set` trigger, which 
 server (2026-09-30) with a test app: a build that fails (`RUN false` in the Dockerfile) and a build whose container
 fails the checks both left the metadata at the previous commit, through `git push` and through `git:sync`.
 
-`GIT_REV` (`dokku config:get <app> GIT_REV`) was used before and dropped: Dokku sets it before building, so in the same
-test it named each commit whose deploy had just failed. A failed manual deploy of the branch head would then have been
-recorded as deployed. `git:report --git-sha` doesn't help either: it runs `git rev-parse HEAD` in the app's bare repo,
-which printed the literal string `HEAD` on that server. `poll --redeploy <app>` rebuilds regardless.
+`GIT_REV` (`dokku config:get <app> GIT_REV`) was used before and dropped: Dokku sets it before building, so in the
+same test it named each commit whose deploy had just failed. A failed manual deploy of the branch head would then have
+been recorded as deployed. `git:report --git-sha` doesn't help either: it runs `git rev-parse HEAD` in the app's bare
+repo, which printed the literal string `HEAD` on that server.
+
+The lock is checked first, so a deploy of the branch head still in progress is waited for. `poll --redeploy <app>`
+rebuilds regardless.
 
 ## Failed deploys are not retried automatically
 

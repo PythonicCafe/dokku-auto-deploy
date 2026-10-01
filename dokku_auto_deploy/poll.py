@@ -7,8 +7,8 @@ Decision per app (see `decide`):
 - CI of that SHA (push event on that branch, configured workflow) not finished -> wait for the next cycle.
   With `workflow none` there is no CI to wait for.
 - CI failed -> recorded, nothing deployed, nobody notified (the forge already shows the red CI).
-- CI passed -> `dokku git:sync --build` of that exact SHA, unless the app is locked (manual deploy or `apps:lock`),
-  or Dokku already runs it (its last successful deploy): then it is only recorded, so a first run or a lost state doesn't rebuild
+- CI passed -> `dokku git:sync --build` of that exact SHA, unless the app is locked (manual deploy or `apps:lock`:
+  wait), or Dokku already runs it (its last successful deploy): then it is only recorded, so a first run or a lost state doesn't rebuild
   apps that are up to date. `redeploy` rebuilds anyway.
 """
 
@@ -171,12 +171,12 @@ def process_app(
         logger.info("[%s] %s@%s: CI failed, not deploying", app, branch, sha[:8])
         record(properties, app, sha, "ci_failed", last_deployed)
         return
+    if dokku.is_locked(app):
+        logger.info("[%s] %s@%s: app locked (deploy in progress or apps:lock), waiting", app, branch, sha[:8])
+        return
     if not redeploy and dokku.runs_commit(app, sha):
         logger.info("[%s] %s@%s: app already runs this commit, recorded without rebuilding", app, branch, sha[:8])
         record(properties, app, sha, "deployed", sha)
-        return
-    if dokku.is_locked(app):
-        logger.info("[%s] %s@%s: app locked (deploy in progress or apps:lock), waiting", app, branch, sha[:8])
         return
     logger.info("[%s] deploying %s@%s", app, branch, sha[:8])
     success, output = dokku.git_sync(app, config.repository.clone_url, sha, on_output)

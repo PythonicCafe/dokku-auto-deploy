@@ -326,3 +326,11 @@ class TestRecordBeforeNotifying:
         assert do_poll(app_env, fake_api) == 0
         assert read_state(app_env)["deployed_sha"] == "c3"
         assert len(fake_dokku.syncs) == 1
+
+
+def test_locked_app_is_not_recorded_even_if_it_already_runs_the_head(app_env, fake_api, fake_dokku):
+    github_state(fake_api)
+    fake_dokku.set(locked=True, deploy_source="https://example.com/Org/proj.git#c3")
+    write_state(app_env, sha="c1", status="deployed", deployed_sha="c1")
+    assert do_poll(app_env, fake_api) == 0
+    assert read_state(app_env)["sha"] == "c1"

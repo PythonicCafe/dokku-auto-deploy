@@ -37,9 +37,9 @@ For each app with a `repository` set, every run:
    (GitHub, Forgejo) or the push pipeline (GitLab); the latest one counts, so a successful retry wins. If there is none
    yet or it is still running, waits for the next run. If it failed, records it and checks again on the next runs, in
    case someone re-runs the CI. With `workflow none` this step is skipped and every new commit is deployed.
-4. If Dokku already runs that commit (its last successful deploy, per `dokku apps:report <app>
-   --app-deploy-source-metadata`), only records it: no rebuild, no notification. If the app is locked in Dokku, waits
-   for the next run.
+4. If the app is locked in Dokku (a deploy in progress, or `apps:lock`), waits for the next run. If Dokku already runs
+   that commit (its last successful deploy, per `dokku apps:report <app> --app-deploy-source-metadata`), only records
+   it: no rebuild, no notification.
 5. Runs `dokku git:sync --build <app> <repository>.git <sha>`, streaming the build log to the run's output.
 6. Records the result and notifies the configured channels. Comments go to every pull/merge request merged into the
    branch since the last successful deploy of that app (several can land in one deploy); if there is none, there is no
