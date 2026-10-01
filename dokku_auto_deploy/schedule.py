@@ -28,6 +28,7 @@ def log_file() -> Path:
 class Status:
     cron: bool
     timer: str  # "enabled", "disabled" or "not installed"
+    timer_active: bool  # Running now; an enabled timer is inactive until started (or the next boot)
 
 
 def timer_state() -> str:
@@ -44,8 +45,15 @@ def timer_state() -> str:
     return "not installed"
 
 
+def timer_active() -> bool:
+    if shutil.which("systemctl") is None:
+        return False
+    result = subprocess.run(["systemctl", "is-active", TIMER], capture_output=True, check=False, timeout=TIMEOUT)
+    return result.returncode == 0
+
+
 def status(properties: Properties) -> Status:
-    return Status(cron=properties.get(GLOBAL, SCHEDULE_KEY) == "cron", timer=timer_state())
+    return Status(cron=properties.get(GLOBAL, SCHEDULE_KEY) == "cron", timer=timer_state(), timer_active=timer_active())
 
 
 class CrontabError(RuntimeError):

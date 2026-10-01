@@ -35,7 +35,12 @@ def global_report(properties: Properties) -> dict[str, str]:
     from dokku_auto_deploy.schedule import status
 
     current = status(properties)
-    return {**_global_values(properties), "schedule-cron": str(current.cron).lower(), "systemd-timer": current.timer}
+    return {
+        **_global_values(properties),
+        "schedule-cron": str(current.cron).lower(),
+        "systemd-timer": current.timer,
+        "systemd-timer-active": str(current.timer_active).lower(),
+    }
 
 
 def _forge_login(url: str | None, netrc_path: Path) -> str:

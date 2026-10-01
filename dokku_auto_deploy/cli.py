@@ -253,11 +253,14 @@ def _schedule_rows(properties: Properties) -> list[tuple[str, str]]:
 
     current = status(properties)
     cron = f"on, every minute, log: {log_file()}" if current.cron else "off"
-    return [("cron", cron), ("systemd timer", current.timer)]
+    timer = current.timer
+    if timer != "not installed":
+        timer += ", active" if current.timer_active else ", not active"
+    return [("cron", cron), ("systemd timer", timer)]
 
 
 def _schedule(properties: Properties, scheduler: str | None) -> int:
-    from dokku_auto_deploy.schedule import TIMER, CrontabError, set_cron, timer_state
+    from dokku_auto_deploy.schedule import TIMER, CrontabError, set_cron, timer_active, timer_state
 
     if scheduler is None:
         _print_rows("auto-deploy schedule", _schedule_rows(properties))
@@ -272,10 +275,11 @@ def _schedule(properties: Properties, scheduler: str | None) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return EXIT_ERROR
     print(f"=====> cron {'on' if scheduler == 'cron' else 'off'}")
-    if scheduler == "systemd" and timer != "enabled":
-        print(f"Now enable the timer as root: systemctl enable --now {TIMER}")
-    elif scheduler != "systemd" and timer == "enabled":
-        print(f"The systemd timer is enabled too; disable it as root: systemctl disable --now {TIMER}")
+    active = timer_active()
+    if scheduler == "systemd" and (timer != "enabled" or not active):
+        print(f"Now enable and start the timer as root: systemctl enable --now {TIMER}")
+    elif scheduler != "systemd" and (timer == "enabled" or active):
+        print(f"The systemd timer is on too; stop and disable it as root: systemctl disable --now {TIMER}")
     return EXIT_OK
 
 

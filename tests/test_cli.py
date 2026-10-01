@@ -319,6 +319,7 @@ class TestReport:
             "global-workflow": WORKFLOW,
             "schedule-cron": "false",
             "systemd-timer": "enabled",
+            "systemd-timer-active": "true",
         }
 
     def test_problem_is_shown(self, dokku_env, fake_dokku, capsys):
@@ -426,8 +427,16 @@ class TestSchedule:
         assert normalized(capsys.readouterr().out) == [
             "=====> auto-deploy schedule",
             "cron: on, every minute, log: /var/log/dokku/auto-deploy.log",
-            "systemd timer: disabled",
+            "systemd timer: disabled, not active",
         ]
+
+    def test_enabled_timer_that_was_never_started_is_shown_and_explained(self, dokku_env, fake_dokku, capsys):
+        """Like `systemctl enable` without `--now`: the timer only starts on the next boot."""
+        fake_dokku.set_timer("enabled", active=False)
+        assert main(["auto-deploy:schedule"]) == 0
+        assert "systemd timer: enabled, not active" in normalized(capsys.readouterr().out)
+        assert main(["auto-deploy:schedule", "systemd"]) == 0
+        assert "systemctl enable --now dokku-auto-deploy.timer" in capsys.readouterr().out
 
     def test_cron_regenerates_the_crontab(self, dokku_env, fake_dokku, capsys):
         fake_dokku.set_timer("disabled")

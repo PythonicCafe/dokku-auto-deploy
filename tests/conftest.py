@@ -166,13 +166,18 @@ class FakeDokku:
         else:
             during_sync.write_text(self._lock_content(lock_during_sync))
 
-    def set_timer(self, state: str | None) -> None:
-        """systemd timer state: "enabled", "disabled", or None when not installed."""
+    def set_timer(self, state: str | None, active: bool | None = None) -> None:
+        """systemd timer state: "enabled", "disabled", or None when not installed; active by default when enabled."""
         path = self.directory / "timer"
         if state is None:
             path.unlink(missing_ok=True)
         else:
             path.write_text(state + "\n")
+        active_path = self.directory / "timer-active"
+        if active if active is not None else state == "enabled":
+            active_path.touch()
+        else:
+            active_path.unlink(missing_ok=True)
 
     def remove_app(self, app: str) -> None:
         (self.directory / f"missing-{app}").touch()
@@ -206,6 +211,7 @@ cat "$FAKE_DOKKU_DIR/crontab"
 """
 FAKE_SYSTEMCTL = """#!/bin/sh
 echo "systemctl $@" >> "$FAKE_DOKKU_DIR/calls"
+[ "$1" = is-active ] && { [ -f "$FAKE_DOKKU_DIR/timer-active" ] && exit 0 || exit 3; }
 [ -f "$FAKE_DOKKU_DIR/timer" ] || { echo "Failed to get unit file state" >&2; exit 1; }
 cat "$FAKE_DOKKU_DIR/timer"
 [ "$(cat "$FAKE_DOKKU_DIR/timer")" = enabled ]
