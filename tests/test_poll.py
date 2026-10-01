@@ -135,6 +135,15 @@ class TestPoll:
         assert fake_dokku.syncs == ["git:sync --build proj-stg https://github.com/Org/proj.git c3"]
         assert not [path for _, path, _, _ in fake_api.requests if path.endswith("/actions/runs")]
 
+    def test_notifications_include_the_app_url(self, tmp_path, fake_api, fake_dokku):
+        github_state(fake_api)
+        fake_dokku.set(url="https://proj-stg.example.com")
+        write_state(tmp_path, sha="c1", status="deployed", deployed_sha="c1")
+        do_poll(make_config(tmp_path), fake_api)
+        comment, telegram = (body for _, body in fake_api.posts())
+        assert "https://proj-stg.example.com" in comment["body"]
+        assert "https://proj-stg.example.com" in telegram["text"]
+
     def test_waits_while_ci_runs(self, tmp_path, fake_api, fake_dokku):
         github_state(fake_api, runs=[run(status="in_progress", conclusion=None)])
         write_state(tmp_path, sha="c1", status="deployed", deployed_sha="c1")

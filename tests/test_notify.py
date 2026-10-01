@@ -25,8 +25,13 @@ def make_target(notify=(), telegram_chat=""):
     )
 
 
-def make_result(success=True, output="", prs=(), target=None):
-    return DeployResult(target=target or make_target(), sha=SHA, success=success, output=output, prs=list(prs))
+APP_URL = "https://proj-stg.example.com"
+
+
+def make_result(success=True, output="", prs=(), target=None, app_url=APP_URL):
+    return DeployResult(
+        target=target or make_target(), sha=SHA, success=success, output=output, prs=list(prs), app_url=app_url
+    )
 
 
 PR_7 = {"number": 7, "title": "Adds <export> & more", "html_url": "https://github.com/Org/proj/pull/7"}
@@ -42,9 +47,15 @@ class TestErrorTail:
 
 
 class TestGitHubComment:
-    def test_success(self):
+    def test_success_links_the_commit_and_shows_the_app_url(self):
         body = comment_body(make_result(success=True))
-        assert "`abcdef12`" in body and "`proj-stg`" in body and "succeeded" in body
+        assert f"[`abcdef12`](https://github.com/Org/proj/commit/{SHA})" in body
+        assert "`proj-stg`" in body and "succeeded" in body
+        assert f"[{APP_URL}]({APP_URL})" in body
+
+    def test_without_app_url(self):
+        body = comment_body(make_result(success=True, app_url=None))
+        assert "https://proj-stg" not in body and "succeeded" in body
 
     def test_failure_includes_log_and_retry_command(self):
         body = comment_body(make_result(success=False, output="step 1\n ! boom\n"))
@@ -53,11 +64,14 @@ class TestGitHubComment:
 
 
 class TestTelegram:
-    def test_links_hide_urls_behind_words(self):
+    def test_links(self):
         text = telegram_text(make_result(prs=[PR_7]))
         assert f'<a href="https://github.com/Org/proj/commit/{SHA}">commit</a>' in text
-        assert '<a href="https://github.com/Org/proj/pull/7">#7</a>' in text
-        assert "https://" not in text.replace('href="https://', "")
+        assert '<a href="https://github.com/Org/proj/pull/7">#7 Adds &lt;export&gt; &amp; more</a>' in text
+        assert f'<a href="{APP_URL}">{APP_URL}</a>' in text
+
+    def test_without_app_url(self):
+        assert "proj-stg.example.com" not in telegram_text(make_result(app_url=None))
 
     def test_escapes_html_from_titles(self):
         assert "Adds &lt;export&gt; &amp; more" in telegram_text(make_result(prs=[PR_7]))

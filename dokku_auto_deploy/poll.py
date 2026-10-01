@@ -130,7 +130,7 @@ def process_target(
                     prs = merged_prs(github, target, last_deployed, sha)
                 except (OSError, KeyError, ValueError) as exc:
                     logger.warning("[%s] could not list merged PRs: %s", app, exc)
-            result = DeployResult(target, sha, success, output, prs)
+            result = DeployResult(target, sha, success, output, prs, dokku.app_url(app))
             for failure in notify(result, github.token, telegram_token, github.api, telegram_api):
                 logger.warning("[%s] notification failed: %s", app, failure)
         if success:

@@ -56,6 +56,17 @@ def deployed_rev(app: str) -> str | None:
     return rev if result.returncode == 0 and rev else None
 
 
+def app_url(app: str) -> str | None:
+    """First URL of the app (`dokku url <app>`, from its domains and proxy settings); None if it has none."""
+    result = subprocess.run(
+        ["dokku", "url", app], capture_output=True, text=True, check=False, timeout=LOCK_CHECK_TIMEOUT
+    )
+    for line in result.stdout.splitlines():
+        if line.strip().startswith(("http://", "https://")):
+            return line.strip()
+    return None
+
+
 def git_sync(
     app: str, repository: str, sha: str, on_output: Callable[[bytes], object] | None = None
 ) -> tuple[bool, str]:

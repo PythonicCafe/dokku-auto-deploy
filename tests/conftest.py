@@ -79,6 +79,7 @@ echo "$@" >> "$FAKE_DOKKU_DIR/calls"
 case "$1" in
   apps:locked) [ -f "$FAKE_DOKKU_DIR/locked" ] && exit 0 || exit 1 ;;
   config:get) [ -f "$FAKE_DOKKU_DIR/git-rev" ] && cat "$FAKE_DOKKU_DIR/git-rev" && exit 0 || exit 1 ;;
+  url) cat "$FAKE_DOKKU_DIR/url" 2>/dev/null; exit 0 ;;
   git:sync)
     [ -f "$FAKE_DOKKU_DIR/lock-during-sync" ] && touch "$FAKE_DOKKU_DIR/locked"
     cat "$FAKE_DOKKU_DIR/output" 2>/dev/null
@@ -99,7 +100,9 @@ class FakeDokku:
         locked: bool = False,
         lock_during_sync: bool = False,
         git_rev: str | None = None,
+        url: str = "",
     ) -> None:
+        (self.directory / "url").write_text(url + "\n" if url else "")
         (self.directory / "exit-code").write_text(str(exit_code))
         (self.directory / "output").write_text(output)
         rev_file = self.directory / "git-rev"

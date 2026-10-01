@@ -1,6 +1,6 @@
 import sys
 
-from dokku_auto_deploy.dokku import deployed_rev, git_sync, is_locked, run_streaming
+from dokku_auto_deploy.dokku import app_url, deployed_rev, git_sync, is_locked, run_streaming
 
 
 def test_run_streaming_returns_output_and_code_while_streaming():
@@ -38,3 +38,14 @@ def test_deployed_rev_reads_git_rev(fake_dokku):
 def test_deployed_rev_is_none_when_unset(fake_dokku):
     fake_dokku.set(git_rev=None)
     assert deployed_rev("app") is None
+
+
+def test_app_url_is_the_first_url(fake_dokku):
+    fake_dokku.set(url="https://app.example.com")
+    assert app_url("app") == "https://app.example.com"
+    assert "url app" in fake_dokku.calls
+
+
+def test_app_url_is_none_without_domains(fake_dokku):
+    fake_dokku.set(url="")
+    assert app_url("app") is None

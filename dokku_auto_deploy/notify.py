@@ -27,6 +27,7 @@ class DeployResult:
     success: bool
     output: str
     prs: list[dict[str, Any]]
+    app_url: str | None = None
 
 
 def error_tail(output: str, max_lines: int = 60) -> str:
@@ -35,12 +36,19 @@ def error_tail(output: str, max_lines: int = 60) -> str:
     return "\n".join(lines).replace("```", "'''")
 
 
+def commit_url(result: DeployResult) -> str:
+    return f"https://github.com/{result.target.repository}/commit/{result.sha}"
+
+
 def comment_body(result: DeployResult) -> str:
-    app, sha = result.target.app, result.sha[:8]
+    """Markdown comment. The commit is an explicit link: GitHub doesn't autolink a SHA inside backticks."""
+    app = result.target.app
+    commit = f"[`{result.sha[:8]}`]({commit_url(result)})"
+    app_line = f"\n\nApp: [{result.app_url}]({result.app_url})" if result.app_url else ""
     if result.success:
-        return f"Deploy of `{sha}` to `{app}` succeeded."
+        return f"Deploy of {commit} to `{app}` succeeded.{app_line}"
     return (
-        f"Deploy of `{sha}` to `{app}` **failed**. End of the build log:\n\n"
+        f"Deploy of {commit} to `{app}` **failed**.{app_line}\n\nEnd of the build log:\n\n"
         f"```\n{error_tail(result.output)}\n```\n\n"
         f"Full log on the server: `journalctl -u dokku-auto-deploy`. "
         f"To retry: `dokku-auto-deploy poll --force {app}`."
@@ -48,18 +56,23 @@ def comment_body(result: DeployResult) -> str:
 
 
 def telegram_text(result: DeployResult) -> str:
-    """Message for `parse_mode=HTML`: URLs stay behind words, and the log is cut (from the start) to fit the limit."""
+    """Message for `parse_mode=HTML`; the build log is cut (from the start) to fit the length limit.
+
+    The commit link sits behind the word "commit" and each PR link spans "#number title"; the app URL is shown in full.
+    """
     target, sha = result.target, result.sha
     status = "succeeded" if result.success else "FAILED"
-    commit_url = html.escape(f"https://github.com/{target.repository}/commit/{sha}")
     lines = [
         f"Deploy {status}: <b>{html.escape(target.app)}</b>",
-        f'{html.escape(target.repository)} {html.escape(target.branch)}, <a href="{commit_url}">commit</a> '
-        f"<code>{sha[:8]}</code>",
+        f'{html.escape(target.repository)} {html.escape(target.branch)}, <a href="{html.escape(commit_url(result))}">'
+        f"commit</a> <code>{sha[:8]}</code>",
     ]
+    if result.app_url:
+        url = html.escape(result.app_url)
+        lines.append(f'<a href="{url}">{url}</a>')
     for pull in result.prs:
-        link = f'<a href="{html.escape(pull["html_url"])}">#{pull["number"]}</a>'
-        lines.append(f"{link} {html.escape(pull.get('title') or '')}")
+        label = html.escape(f"#{pull['number']} {pull.get('title') or ''}".strip())
+        lines.append(f'<a href="{html.escape(pull["html_url"])}">{label}</a>')
     text = "\n".join(lines)
     if not result.success:
         room = TELEGRAM_MAX_LENGTH - len(text) - len("\n<pre></pre>")

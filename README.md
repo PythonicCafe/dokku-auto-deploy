@@ -224,7 +224,8 @@ it out: the built-in default applies.
    It sends one test message to each configured chat, listing the apps reported there, and prints `ok <chat> (apps)`
    or the Telegram error for each one.
 
-Messages are HTML: the commit and pull request links sit behind the words "commit" and "#number".
+Messages are HTML: the commit link sits behind the word "commit", each pull request link spans "#number title",
+and the app URL (from `dokku url <app>`) is shown in full. GitHub comments link the commit and show the app URL too.
 
 ### 5. First run
 
