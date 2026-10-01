@@ -258,10 +258,12 @@ class TestReport:
 
     def test_problem_is_shown(self, dokku_env, fake_dokku, capsys):
         self.configure(dokku_env)
-        dokku_env.properties.delete(GLOBAL, "workflow")
+        dokku_env.properties.delete("proj-stg", "telegram-chat")
         assert main(["auto-deploy:report", "proj-stg"]) == 0
         lines = [" ".join(line.split()) for line in capsys.readouterr().out.splitlines()]
-        assert "problem: workflow is not set (dokku auto-deploy:set <app>|--global workflow" in "\n".join(lines)
+        assert "problem: telegram-chat is not set (dokku auto-deploy:set <app>|--global telegram-chat" in "\n".join(
+            lines
+        )
 
     def test_unconfigured_app(self, dokku_env, capsys):
         assert main(["auto-deploy:report", "nope"]) == 3

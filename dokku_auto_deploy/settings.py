@@ -92,10 +92,10 @@ KEYS = {
         Key(
             "workflow",
             "both",
-            "CI workflow file to wait for (GitLab: any), or none to deploy without waiting",
+            "CI workflow file to wait for (GitLab: any value); none (default) deploys without waiting",
             _workflow,
         ),
-        Key("notify", "both", f"Comma-separated channels ({', '.join(CHANNELS)}), or none", _notify),
+        Key("notify", "both", f"Comma-separated channels ({', '.join(CHANNELS)}), or none (default)", _notify),
         Key(
             "telegram-chat", "both", "Telegram chat id, optionally with a topic: -100123 or -100123_45", _telegram_chat
         ),
@@ -161,9 +161,7 @@ def load_app(properties: Properties, app: str) -> AppConfig:
         repository = Repository(url, forge)
     except RepositoryError as exc:
         raise ConfigError(str(exc)) from None
-    workflow = get("workflow")
-    if workflow is None:
-        raise missing("workflow", ".github/workflows/ci.yml|none")
+    workflow = get("workflow") or NONE  # Waiting for CI is opt-in
     if forge == "github" and workflow != NONE and not workflow.startswith(GITHUB_WORKFLOWS):
         # GitHub reports runs by full path: any other value would wait forever
         raise ConfigError(f"workflow {workflow} is not a GitHub workflow file ({GITHUB_WORKFLOWS}<file>.yml)")

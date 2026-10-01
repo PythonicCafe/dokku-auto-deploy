@@ -190,12 +190,13 @@ limit.
 ## Settings
 
 Per app, in Dokku properties, set with `auto-deploy:set`. Keys that make sense everywhere (`workflow`, `notify`,
-`telegram-chat`) can also be set with `--global`, and an app without its own value uses the global one. Dokku has no
-empty values (`set` without a value unsets), so "no CI" and "no notification" are the explicit value `none`, which
-also overrides a global value. `repository` and `branch` are app-only and required: the old environment defaults
-(stg -> `develop`, prd -> `main`) don't fit per-app settings, and guessing a branch from an app name suffix would be
-magic. Values are validated when set, and each app again when a run resolves it, so a typo never falls back to a
-default silently; `report` shows the same problem.
+`telegram-chat`) can also be set with `--global`, and an app without its own value uses the global one. Unset,
+`workflow` and `notify` mean `none`: waiting for CI and notifying are opt-in. Dokku has no empty values (`set` without a
+value unsets), so turning them off for one app while the global value is on takes the explicit value `none`.
+`repository` and `branch` are app-only and required: the old environment defaults (stg -> `develop`, prd -> `main`)
+don't fit per-app settings, and guessing a branch from an app name suffix would be magic. Values are validated when set,
+and each app again when a run resolves it, so a typo never falls back to a default silently; `report` shows the same
+problem.
 
 `repository` is the web URL, not `owner/name`: it says which host (and so which token) to use, and later which forge.
 

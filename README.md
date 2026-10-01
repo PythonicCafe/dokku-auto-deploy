@@ -16,8 +16,8 @@ to `myproject-prd`, but each app picks its own repository, branch, CI workflow a
 Features:
 
 - No inbound port and no secret stored on the forge: the server pulls.
-- Deploys only the exact commit whose CI succeeded; a newer push waits for its own CI. Apps without CI can opt out
-  (`workflow none`).
+- Deploys only the exact commit whose CI succeeded; a newer push waits for its own CI. Waiting for CI is opt-in
+  per app (`workflow`): without it, every new commit is deployed.
 - Respects Dokku's deploy lock: never starts while another deploy (e.g. a manual `git push dokku`) runs or while the
   app is locked with `dokku apps:lock`.
 - A failed deploy is reported once and not retried in a loop; `dokku auto-deploy:poll --redeploy <app>` retries it.
@@ -36,7 +36,8 @@ For each app with a `repository` set, every run:
 3. Looks for the CI of that commit, triggered by a push to that branch: the runs of the configured workflow file
    (GitHub, Forgejo) or the push pipeline (GitLab); the latest one counts, so a successful retry wins. If there is none
    yet or it is still running, waits for the next run. If it failed, records it and checks again on the next runs, in
-   case someone re-runs the CI. With `workflow none` this step is skipped and every new commit is deployed.
+   case someone re-runs the CI. Without a `workflow` (or with `workflow none`) this step is skipped and every new commit
+   is deployed.
 4. If the app is locked in Dokku (a deploy in progress, or `apps:lock`), waits for the next run. If Dokku already runs
    that commit (its last successful deploy, per `dokku apps:report <app> --app-deploy-source-metadata`), only records
    it: no rebuild, no notification.
@@ -59,8 +60,8 @@ Losing that state is harmless: apps already running the branch head are only rec
 
 - Dokku 0.23+ (`git:sync`, `apps:locked`); 0.26+ to skip rebuilding commits an app already runs; tested on 0.38.28.
 - Python 3.11+ on the host (Debian 12+, Ubuntu 24.04+). The plugin install checks it.
-- A CI workflow that runs on pushes to the deployed branches (see "CI workflow"), unless the app uses
-  `workflow none`. On Forgejo, waiting for CI needs Forgejo 12+ (the version that added the Actions runs API).
+- A CI workflow that runs on pushes to the deployed branches (see "CI workflow"), for apps with a
+  `workflow`. On Forgejo, waiting for CI needs Forgejo 12+ (the version that added the Actions runs API).
 
 ## Installation
 
@@ -183,7 +184,7 @@ dokku auto-deploy:set myproject-prd telegram-chat -1001234567890_7    # producti
 
 dokku auto-deploy:set site-prd repository https://github.com/PythonicCafe/website
 dokku auto-deploy:set site-prd branch main
-dokku auto-deploy:set site-prd workflow none                          # no CI: deploy every new commit
+dokku auto-deploy:set site-prd workflow none                          # no CI: overrides the global workflow
 dokku auto-deploy:set site-prd notify telegram
 
 dokku auto-deploy:report                                               # check everything
@@ -197,8 +198,8 @@ from (`(global)` when inherited) and a `problem:` line if the app's settings are
 | `repository` | app | Repository web URL (`https://github.com/owner/name`, `https://gitlab.com/group/subgroup/project`, `https://codeberg.org/owner/name`). Setting it enables auto-deploy for the app; unsetting it disables it |
 | `branch` | app | Branch to deploy (required) |
 | `forge` | app | Forge type, only for hosts other than github.com, gitlab.com and codeberg.org: `github` (GitHub Enterprise Server), `gitlab` (self-managed GitLab) or `forgejo` |
-| `workflow` | app, global | GitHub, Forgejo: workflow file whose run must succeed, e.g. `.github/workflows/ci.yml` or `.forgejo/workflows/ci.yml` (Forgejo only looks at the file name). GitLab: any value but `none` waits for the push pipeline (e.g. `.gitlab-ci.yml`). `none` deploys every new commit without waiting for CI (required) |
-| `notify` | app, global | Comma-separated channels: `comment`, `telegram`, both, or `none` (default: none) |
+| `workflow` | app, global | GitHub, Forgejo: workflow file whose run must succeed, e.g. `.github/workflows/ci.yml` or `.forgejo/workflows/ci.yml` (Forgejo only looks at the file name). GitLab: any value but `none` waits for the push pipeline (e.g. `.gitlab-ci.yml`). `none` (default) deploys every new commit without waiting for CI |
+| `notify` | app, global | Comma-separated channels: `comment`, `telegram`, both, or `none` (default) |
 | `telegram-chat` | app, global | Group id (`-100...`), or group id `_` topic id (required when `notify` has `telegram`) |
 | `telegram-bot-token` | global | Telegram bot token, read from stdin |
 
@@ -254,7 +255,7 @@ Before scheduling it, follow one change end to end, running `poll` by hand (`-v`
 
 1. On your machine, create a branch from `develop`, make a small visible change, push it and open a pull request into
    `develop`. Merge it (merge, squash or rebase: all work).
-2. Wait for the CI run of the merge commit to finish (skip this with `workflow none`).
+2. Wait for the CI run of the merge commit to finish (skip this without a `workflow`).
 3. On the server:
    ```sh
    dokku auto-deploy:poll -v

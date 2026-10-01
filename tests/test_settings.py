@@ -92,6 +92,10 @@ class TestLoadApp:
         properties.set("app", "notify", "none")
         assert load_app(properties, "app").notify == ()
 
+    def test_workflow_and_notify_default_to_none(self, properties):
+        config = load_app(properties, "app")
+        assert (config.workflow, config.notify) == (None, ())
+
     def test_forge_detected_from_host(self, properties):
         properties.set("app", "workflow", "none")
         config = load_app(properties, "app")
@@ -100,7 +104,6 @@ class TestLoadApp:
     @pytest.mark.parametrize(
         "settings, message",
         [
-            pytest.param({}, "workflow is not set", id="workflow"),
             pytest.param({"workflow": "none", "notify": "telegram"}, "telegram-chat is not set", id="chat"),
             pytest.param(
                 {"workflow": "none", "repository": "https://git.example.com/Org/proj"}, "forge is not set", id="forge"
