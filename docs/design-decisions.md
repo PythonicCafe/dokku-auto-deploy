@@ -52,9 +52,9 @@ Facts checked in Dokku 0.38.28's source (2026-09) that shaped it:
   app of that name (`plugins/common/properties.go`). The Python code reads and writes that layout directly, so the
   bash triggers can use Dokku's `fn-plugin-property-*` functions on the same data.
 
-## Scheduling: systemd timer + oneshot service
+## Scheduling: systemd timer or Dokku's cron
 
-Alternatives: cron (needs log redirection and something against overlapping runs), a `while true; sleep` daemon
+Alternatives: plain cron (needs log redirection and something against overlapping runs), a `while true; sleep` daemon
 (state in memory, no way to trigger a run by hand) and an app inside Dokku (would need a Dokku SSH key inside a
 container). With `OnUnitInactiveSec`, the interval counts from the end of the previous run: a long build only delays
 the next check. Timeout (`TimeoutStartSec`), logs (`journalctl -u`) and manual runs (`systemctl start`) come for free.
@@ -64,7 +64,18 @@ The service runs as the dokku user (`User=`), like any plugin command.
 (several apps deploying in one run can take longer than any fixed limit) would leave the app's deploy lock file behind.
 
 The `install` trigger writes the units but leaves the timer disabled: enabling it is the admin's decision, and
-`plugin:update` rewrites the units without changing whether the timer is enabled. `poll` also takes a non-blocking
+`plugin:update` rewrites the units without changing whether the timer is enabled. A plugin command can't enable it
+(it runs as the dokku user), so `auto-deploy:schedule systemd` prints the `systemctl` command instead.
+
+Cron is offered too (`auto-deploy:schedule cron`), through Dokku's own mechanism rather than `/etc/cron.d`: Dokku's
+cron plugin regenerates the whole dokku user crontab (`crontab -u dokku`) on every deploy and `cron:*` change, so a line
+added by hand would be lost; plugins add tasks through the `cron-entries` trigger instead (`$SCHEDULE;$COMMAND;$LOG`,
+the log appended with `&>>`), and `plugn trigger scheduler-cron-write` regenerates the crontab on demand, all as the
+dokku user (checked in `plugins/cron/crontab.go`, 0.38.28). The trigger is called once per scheduler that uses the host
+crontab, so it only answers for `docker-local`. Found there too: an empty line in a trigger's output makes Dokku drop
+every task that trigger returned, so it prints exactly one line. The trigger is only asked for the schedulers that
+some app uses: with no app on `docker-local` (all on k3s, say), the task never reaches the crontab, so `schedule cron`
+reads the crontab back and undoes itself when the task is missing. `poll` also takes a non-blocking
 `flock` on `<DOKKU_LIB_ROOT>/data/auto-deploy/poll.lock` and exits if another `poll` holds it, so a manual run during
 a scheduled one (or two schedulers) never deploys twice.
 

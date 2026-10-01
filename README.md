@@ -73,8 +73,11 @@ dokku plugin:update auto-deploy v0.2.0
 ```
 
 The plugin is named `auto-deploy` (Dokku drops the `dokku-` prefix of the repository name), so its commands are
-`dokku auto-deploy:*`. Installing and updating create the systemd units that run it every minute, disabled; enabling
-them is part of the setup below.
+`dokku auto-deploy:*`. Installing and updating create systemd units that can run it every minute, disabled; choosing
+between them and cron is part of the setup below.
+
+`dokku plugin:uninstall auto-deploy` stops scheduling runs, waits for a run in progress to finish (it may be deploying
+an app), then removes the systemd units. Settings and state stay, so reinstalling picks them up.
 
 ## Setup
 
@@ -222,16 +225,34 @@ Promoting to production is the same flow with a pull request from `develop` into
 
 ### 7. Run it every minute
 
-The plugin installed a systemd service and timer; enable the timer as root:
+Choose one of two schedulers. Either way runs never overlap: a `poll` started while another one runs (e.g. a manual
+one) exits right away.
+
+The systemd timer (installed with the plugin, disabled) logs to the journal. Enable it as root:
 
 ```sh
+dokku auto-deploy:schedule systemd        # makes sure cron is off, then prints the command below
 systemctl enable --now dokku-auto-deploy.timer
 journalctl -fu dokku-auto-deploy          # follow the logs and build output
 ```
 
 The service runs `dokku auto-deploy:poll` as the dokku user. `OnUnitInactiveSec` counts from the end of the previous
-run, so a long build only delays the next check; `systemctl start dokku-auto-deploy` runs a check right away. Runs
-never overlap anyway: a `poll` started while another one runs (e.g. a manual one) exits right away.
+run, so a long build only delays the next check; `systemctl start dokku-auto-deploy` runs a check right away.
+
+Or cron, fully managed by the plugin and without root: it adds a task to the crontab Dokku manages for the dokku user
+(`dokku cron:list --global` shows it), logging to `/var/log/dokku/auto-deploy.log` (rotated with Dokku's other logs):
+
+```sh
+dokku auto-deploy:schedule cron
+tail -f /var/log/dokku/auto-deploy.log
+```
+
+Dokku only writes this task when at least one app uses a scheduler that runs on the host crontab (`docker-local`, the
+default): with every app on k3s, for instance, `schedule cron` finds no task in the crontab, undoes the change and says
+to use the systemd timer.
+
+`dokku auto-deploy:schedule` shows the current choice, and `dokku auto-deploy:schedule none` removes the cron task
+(the timer, if enabled, needs `systemctl disable --now dokku-auto-deploy.timer`, as the command reminds you).
 
 ## Day to day
 
@@ -285,6 +306,7 @@ dokku auto-deploy:set <app>|--global <key> [<value>]      set a setting, or unse
 dokku auto-deploy:report [<app>|--global]                 show settings and the last handled commit
 dokku auto-deploy:poll [--redeploy <app>] [--verbose]     deploy every configured app whose branch head passed CI
 dokku auto-deploy:notify-test <app> [--pull-request <n>]  send a test Telegram message and optionally a test comment
+dokku auto-deploy:schedule [systemd|cron|none]           show or choose what runs poll every minute
 ```
 
 - Every command takes `--help`, and `dokku auto-deploy:help` lists them.

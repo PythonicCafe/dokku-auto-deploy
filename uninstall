@@ -1,15 +1,22 @@
 #!/usr/bin/env bash
 set -eo pipefail
 [[ $DOKKU_TRACE ]] && set -x
+source "$PLUGIN_CORE_AVAILABLE_PATH/common/property-functions"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/internal-functions"
 
 trigger-auto-deploy-uninstall() {
-  declare desc="removes the systemd units; settings and state stay, so a reinstall picks them up"
+  declare desc="stops scheduling polls, waits for a running one, then removes the systemd units; settings and state stay, so a reinstall picks them up"
   declare trigger="uninstall"
   declare PLUGIN="$1"
 
   [[ "$PLUGIN" == "auto-deploy" ]] || return 0
-  fn-auto-deploy-uninstall-systemd-units
+  fn-auto-deploy-disable-timer
+  if [[ "$(fn-plugin-property-get "auto-deploy" "--global" "schedule")" == "cron" ]]; then
+    fn-plugin-property-delete "auto-deploy" "--global" "schedule"
+    plugn trigger scheduler-cron-write
+  fi
+  fn-auto-deploy-wait-for-poll
+  fn-auto-deploy-remove-systemd-units
 }
 
 trigger-auto-deploy-uninstall "$@"

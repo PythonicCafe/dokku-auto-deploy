@@ -203,7 +203,7 @@ class TestPluginScripts:
         result = run_plugin(dokku_env, command)
         assert result.returncode == 0
         assert result.stdout.startswith("Usage: dokku auto-deploy[:COMMAND]")
-        for name in ("notify-test", "poll", "report", "set"):
+        for name in ("notify-test", "poll", "report", "schedule", "set"):
             assert f"auto-deploy:{name} " in result.stdout
 
     def test_dokku_help_lists_the_plugin(self, dokku_env):
@@ -230,8 +230,9 @@ class TestReport:
             dokku_env.properties, "proj-stg", {"sha": "c3", "status": "deployed", "at": "T", "deployed_sha": "c3"}
         )
 
-    def test_everything(self, dokku_env, capsys):
+    def test_everything(self, dokku_env, fake_dokku, capsys):
         self.configure(dokku_env)
+        fake_dokku.set_timer("enabled")
         dokku_env.configure("not-configured", branch="main")
         assert main(["auto-deploy:report"]) == 0
         out = capsys.readouterr().out
@@ -242,6 +243,8 @@ class TestReport:
             "notify: telegram",
             "telegram-chat:",
             "telegram-bot-token: set",
+            "cron: off",
+            "systemd timer: enabled",
             "=====> proj-stg auto-deploy information",
             "repository: https://github.com/Org/proj",
             "branch: develop",
@@ -253,7 +256,7 @@ class TestReport:
             "last deployed: c3",
         ]
 
-    def test_problem_is_shown(self, dokku_env, capsys):
+    def test_problem_is_shown(self, dokku_env, fake_dokku, capsys):
         self.configure(dokku_env)
         dokku_env.properties.delete(GLOBAL, "workflow")
         assert main(["auto-deploy:report", "proj-stg"]) == 0
@@ -339,3 +342,143 @@ class TestNotifyTest:
         app_env.properties.delete("proj-stg", "telegram-chat")
         assert main(["auto-deploy:notify-test", "proj-stg"]) == 3
         assert "telegram-chat is not set" in capsys.readouterr().err
+
+
+def normalized(out):
+    return [" ".join(line.split()) for line in out.splitlines()]
+
+
+class TestSchedule:
+    def test_status(self, dokku_env, fake_dokku, capsys, monkeypatch):
+        monkeypatch.setenv("DOKKU_LOGS_DIR", "/var/log/dokku")
+        fake_dokku.set_timer("disabled")
+        dokku_env.configure(GLOBAL, schedule="cron")
+        assert main(["auto-deploy:schedule"]) == 0
+        assert normalized(capsys.readouterr().out) == [
+            "=====> auto-deploy schedule",
+            "cron: on, every minute, log: /var/log/dokku/auto-deploy.log",
+            "systemd timer: disabled",
+        ]
+
+    def test_cron_regenerates_the_crontab(self, dokku_env, fake_dokku, capsys):
+        fake_dokku.set_timer("disabled")
+        assert main(["auto-deploy:schedule", "cron"]) == 0
+        assert dokku_env.properties.get(GLOBAL, "schedule") == "cron"
+        assert [call for call in fake_dokku.calls if call.startswith("plugn")] == ["plugn trigger scheduler-cron-write"]
+        assert capsys.readouterr().out == "=====> cron on\n"
+
+    def test_cron_is_undone_when_dokku_does_not_write_the_task(self, dokku_env, fake_dokku, capsys):
+        """Like a server whose apps all run on k3s: Dokku leaves the host crontab alone."""
+        fake_dokku.set_timer("disabled")
+        (fake_dokku.directory / "no-host-cron").touch()
+        assert main(["auto-deploy:schedule", "cron"]) == 1
+        assert "use the systemd timer instead" in capsys.readouterr().err
+        assert dokku_env.properties.get(GLOBAL, "schedule") is None
+        assert fake_dokku.calls.count("plugn trigger scheduler-cron-write") == 2
+
+    def test_failure_to_write_the_crontab_is_reported_and_can_be_retried(self, dokku_env, fake_dokku, capsys):
+        fake_dokku.set_timer("disabled")
+        plugn = fake_dokku.directory.parent / "bin" / "plugn"
+        working = plugn.read_text()
+        plugn.write_text("#!/bin/sh\nexit 1\n")
+        assert main(["auto-deploy:schedule", "cron"]) == 1
+        assert "could not regenerate the crontab" in capsys.readouterr().err
+        plugn.write_text(working)
+        assert main(["auto-deploy:schedule", "cron"]) == 0
+        assert "plugn trigger scheduler-cron-write" in fake_dokku.calls
+
+    def test_cron_with_timer_enabled_says_how_to_disable_it(self, dokku_env, fake_dokku, capsys):
+        fake_dokku.set_timer("enabled")
+        assert main(["auto-deploy:schedule", "cron"]) == 0
+        assert "systemctl disable --now dokku-auto-deploy.timer" in capsys.readouterr().out
+
+    @pytest.mark.parametrize("scheduler", ["systemd", "none"])
+    def test_systemd_and_none_remove_the_cron_task(self, dokku_env, fake_dokku, scheduler):
+        fake_dokku.set_timer("disabled")
+        dokku_env.configure(GLOBAL, schedule="cron")
+        assert main(["auto-deploy:schedule", scheduler]) == 0
+        assert dokku_env.properties.get(GLOBAL, "schedule") is None
+        assert "plugn trigger scheduler-cron-write" in fake_dokku.calls
+
+    def test_systemd_says_how_to_enable_the_timer(self, dokku_env, fake_dokku, capsys):
+        fake_dokku.set_timer("disabled")
+        assert main(["auto-deploy:schedule", "systemd"]) == 0
+        assert "systemctl enable --now dokku-auto-deploy.timer" in capsys.readouterr().out
+
+    def test_systemd_without_the_units_changes_nothing(self, dokku_env, fake_dokku, capsys):
+        dokku_env.configure(GLOBAL, schedule="cron")
+        assert main(["auto-deploy:schedule", "systemd"]) == 3
+        assert "use cron instead" in capsys.readouterr().err
+        assert dokku_env.properties.get(GLOBAL, "schedule") == "cron"
+
+    def test_schedule_is_not_a_setting(self, dokku_env, fake_dokku):
+        with pytest.raises(SystemExit):
+            parse_args(["auto-deploy:set", "--global", "schedule", "cron"])
+
+
+class TestUninstallTrigger:
+    @staticmethod
+    def start(dokku_env):
+        """Start the trigger with stand-ins for Dokku's property functions that use Dokku's property layout."""
+        core = dokku_env.home / "core-plugins"
+        (core / "common").mkdir(parents=True)
+        (core / "common" / "property-functions").write_text(
+            'fn-plugin-property-get() { cat "$DOKKU_LIB_ROOT/config/$1/$2/$3" 2>/dev/null || true; }\n'
+            'fn-plugin-property-delete() { rm -f "$DOKKU_LIB_ROOT/config/$1/$2/$3"; }\n'
+        )
+        env = {**os.environ, "DOKKU_LIB_ROOT": str(dokku_env.lib_root), "PLUGIN_CORE_AVAILABLE_PATH": str(core)}
+        return subprocess.Popen(
+            ["bash", str(ROOT / "uninstall"), "auto-deploy"], stdout=subprocess.PIPE, text=True, env=env
+        )
+
+    def test_waits_for_a_running_poll_after_removing_the_cron_task(self, dokku_env, fake_dokku):
+        dokku_env.configure(GLOBAL, schedule="cron")
+        with poll_lock(data_dir() / "poll.lock"):
+            uninstall = self.start(dokku_env)
+            assert "Waiting for the running auto-deploy:poll" in uninstall.stdout.readline()
+            assert uninstall.poll() is None
+            assert "plugn trigger scheduler-cron-write" in fake_dokku.calls  # No new poll while waiting
+        assert uninstall.wait(timeout=30) == 0
+        assert dokku_env.properties.get(GLOBAL, "schedule") is None
+
+    def test_does_not_wait_when_no_poll_runs(self, dokku_env, fake_dokku):
+        with poll_lock(data_dir() / "poll.lock"):
+            pass  # Leaves the lock file, as every past poll does
+        uninstall = self.start(dokku_env)
+        output, _ = uninstall.communicate(timeout=30)
+        assert uninstall.returncode == 0 and output == ""
+
+
+class TestCronEntriesTrigger:
+    """Runs the trigger with a stand-in for Dokku's property functions that reads Dokku's property layout."""
+
+    def run(self, dokku_env, scheduler):
+        core = dokku_env.home / "core-plugins"
+        (core / "common").mkdir(parents=True)
+        (core / "common" / "property-functions").write_text(
+            'fn-plugin-property-get() { cat "$DOKKU_LIB_ROOT/config/$1/$2/$3" 2>/dev/null || true; }\n'
+        )
+        env = {
+            **os.environ,
+            "DOKKU_LIB_ROOT": str(dokku_env.lib_root),
+            "PLUGIN_CORE_AVAILABLE_PATH": str(core),
+            "DOKKU_LOGS_DIR": "/var/log/dokku",
+        }
+        result = subprocess.run(
+            ["bash", str(ROOT / "cron-entries"), scheduler], capture_output=True, text=True, env=env, timeout=30
+        )
+        assert result.returncode == 0, result.stderr
+        return result.stdout
+
+    def test_task_when_schedule_is_cron(self, dokku_env):
+        dokku_env.configure(GLOBAL, schedule="cron")
+        assert self.run(dokku_env, "docker-local") == (
+            "* * * * *;dokku auto-deploy:poll;/var/log/dokku/auto-deploy.log\n"
+        )
+
+    def test_nothing_otherwise(self, dokku_env):
+        assert self.run(dokku_env, "docker-local") == ""
+
+    def test_nothing_for_other_schedulers(self, dokku_env):
+        dokku_env.configure(GLOBAL, schedule="cron")
+        assert self.run(dokku_env, "k3s") == ""

@@ -58,11 +58,26 @@ EOF_TIMER
   fi
 }
 
-fn-auto-deploy-uninstall-systemd-units() {
-  declare desc="stops, disables and removes the service and timer"
+fn-auto-deploy-disable-timer() {
+  declare desc="stops and disables the timer, so no new poll starts; a poll already running goes on"
   fn-auto-deploy-systemd-available || return 0
   [[ -f "$AUTO_DEPLOY_SYSTEMD_DIR/$AUTO_DEPLOY_UNIT.timer" ]] || return 0
   systemctl disable --now "$AUTO_DEPLOY_UNIT.timer" >/dev/null 2>&1 || true
+}
+
+fn-auto-deploy-wait-for-poll() {
+  declare desc="waits for a running poll to finish: removing the plugin in the middle of a deploy would break it"
+  local lock_file="${DOKKU_LIB_ROOT:-/var/lib/dokku}/data/auto-deploy/poll.lock"
+  [[ -f "$lock_file" ]] || return 0
+  flock -n "$lock_file" true && return 0
+  echo "-----> Waiting for the running auto-deploy:poll to finish (it may be deploying an app)"
+  flock "$lock_file" true
+}
+
+fn-auto-deploy-remove-systemd-units() {
+  declare desc="removes the service and timer"
+  fn-auto-deploy-systemd-available || return 0
+  [[ -f "$AUTO_DEPLOY_SYSTEMD_DIR/$AUTO_DEPLOY_UNIT.timer" ]] || return 0
   rm -f "$AUTO_DEPLOY_SYSTEMD_DIR/$AUTO_DEPLOY_UNIT.service" "$AUTO_DEPLOY_SYSTEMD_DIR/$AUTO_DEPLOY_UNIT.timer"
   systemctl daemon-reload
 }

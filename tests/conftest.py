@@ -118,6 +118,14 @@ class FakeDokku:
             else:
                 path.unlink(missing_ok=True)
 
+    def set_timer(self, state: str | None) -> None:
+        """systemd timer state: "enabled", "disabled", or None when not installed."""
+        path = self.directory / "timer"
+        if state is None:
+            path.unlink(missing_ok=True)
+        else:
+            path.write_text(state + "\n")
+
     def remove_app(self, app: str) -> None:
         (self.directory / f"missing-{app}").touch()
 
@@ -131,13 +139,41 @@ class FakeDokku:
         return [call for call in self.calls if call.startswith("git:sync")]
 
 
+# `plugn trigger ...` is recorded like a dokku call. `scheduler-cron-write` writes the crontab `crontab -l` shows, like
+# Dokku: with the task only when the schedule is cron and no `no-host-cron` file says that no app uses docker-local.
+# `systemctl is-enabled` answers with the `timer` file's content
+FAKE_PLUGN = """#!/bin/sh
+echo "plugn $@" >> "$FAKE_DOKKU_DIR/calls"
+if [ "$2" = scheduler-cron-write ]; then
+  : > "$FAKE_DOKKU_DIR/crontab"
+  if [ "$(cat "$DOKKU_LIB_ROOT/config/auto-deploy/--global/schedule" 2>/dev/null)" = cron ] \\
+    && [ ! -f "$FAKE_DOKKU_DIR/no-host-cron" ]; then
+    echo "* * * * * dokku auto-deploy:poll &>> /var/log/dokku/auto-deploy.log" > "$FAKE_DOKKU_DIR/crontab"
+  fi
+fi
+"""
+FAKE_CRONTAB = """#!/bin/sh
+[ -s "$FAKE_DOKKU_DIR/crontab" ] || { echo "no crontab for dokku" >&2; exit 1; }
+cat "$FAKE_DOKKU_DIR/crontab"
+"""
+FAKE_SYSTEMCTL = """#!/bin/sh
+echo "systemctl $@" >> "$FAKE_DOKKU_DIR/calls"
+[ -f "$FAKE_DOKKU_DIR/timer" ] || { echo "Failed to get unit file state" >&2; exit 1; }
+cat "$FAKE_DOKKU_DIR/timer"
+[ "$(cat "$FAKE_DOKKU_DIR/timer")" = enabled ]
+"""
+
+
 @pytest.fixture
 def fake_dokku(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeDokku:
+    """Fake `dokku`, `plugn`, `systemctl` and `crontab` commands, first in `PATH`; they record their calls in `calls`."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    script = bin_dir / "dokku"
-    script.write_text(FAKE_DOKKU)
-    script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    commands = {"dokku": FAKE_DOKKU, "plugn": FAKE_PLUGN, "systemctl": FAKE_SYSTEMCTL, "crontab": FAKE_CRONTAB}
+    for name, content in commands.items():
+        script = bin_dir / name
+        script.write_text(content)
+        script.chmod(script.stat().st_mode | stat.S_IEXEC)
     state_dir = tmp_path / "fake-dokku"
     state_dir.mkdir()
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")

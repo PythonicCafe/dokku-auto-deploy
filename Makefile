@@ -1,5 +1,5 @@
 PYTHON = python3
-SHELL_SCRIPTS = commands help-functions internal-functions install update uninstall post-delete post-app-rename-setup subcommands/default
+SHELL_SCRIPTS = commands cron-entries help-functions internal-functions install update uninstall post-delete post-app-rename-setup subcommands/default
 
 help:					# List all make commands
 	@awk -F ':.*#' '/^[a-zA-Z_-]+:.*?#/ { printf "\033[36m%-15s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST) | sort

@@ -32,6 +32,7 @@ fn-auto-deploy-help-content() {
     auto-deploy:notify-test <app> [--pull-request <number>], Sends a test Telegram message and optionally a test comment
     auto-deploy:poll [--redeploy <app>] [--verbose], Deploys every configured app whose branch head passed CI
     auto-deploy:report [<app>|--global], Displays settings and the last handled commit
+    auto-deploy:schedule [systemd|cron|none], Shows or chooses how poll runs every minute
     auto-deploy:set <app>|--global <key> [<value>], Sets a setting, or unsets it when no value is given
 help_content
 }

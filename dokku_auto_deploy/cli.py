@@ -80,6 +80,16 @@ def create_parser() -> argparse.ArgumentParser:
     )
     poll.add_argument("-v", "--verbose", action="store_true", help="Also log apps waiting for CI")
 
+    schedule = commands.add_parser(
+        f"{PREFIX}schedule",
+        help="Show or choose how poll runs every minute: systemd timer or Dokku's cron",
+        description="Without an argument, show whether poll is scheduled by cron and by the systemd timer. cron adds "
+        "a task to the crontab Dokku manages for the dokku user (log: /var/log/dokku/auto-deploy.log); systemd and "
+        "none remove it. The systemd timer can only be enabled or disabled by root, so this prints the systemctl "
+        "command to run.",
+    )
+    schedule.add_argument("scheduler", nargs="?", choices=("systemd", "cron", "none"), help="What should run poll")
+
     notify_test = commands.add_parser(
         f"{PREFIX}notify-test",
         help="Send a test Telegram message and, optionally, a test comment",
@@ -163,7 +173,7 @@ def _report_global(properties: Properties) -> None:
             rows.append((key.name, "set" if value else "not set"))
         else:
             rows.append((key.name, value or ""))
-    _print_rows("auto-deploy global settings", rows)
+    _print_rows("auto-deploy global settings", rows + _schedule_rows(properties))
 
 
 def _report_app(properties: Properties, app: str) -> None:
@@ -235,6 +245,37 @@ def _poll(properties: Properties, redeploy: list[str]) -> int:
         logging.getLogger(__name__).info("%s, skipping this run", exc)
         return EXIT_OK
     return EXIT_ERROR if errors else EXIT_OK
+
+
+def _schedule_rows(properties: Properties) -> list[tuple[str, str]]:
+    from dokku_auto_deploy.schedule import log_file, status
+
+    current = status(properties)
+    cron = f"on, every minute, log: {log_file()}" if current.cron else "off"
+    return [("cron", cron), ("systemd timer", current.timer)]
+
+
+def _schedule(properties: Properties, scheduler: str | None) -> int:
+    from dokku_auto_deploy.schedule import TIMER, CrontabError, set_cron, timer_state
+
+    if scheduler is None:
+        _print_rows("auto-deploy schedule", _schedule_rows(properties))
+        return EXIT_OK
+    timer = timer_state()
+    if scheduler == "systemd" and timer == "not installed":
+        print(f"Error: {TIMER} is not installed (no systemd?); use cron instead", file=sys.stderr)
+        return EXIT_CONFIG
+    try:
+        set_cron(properties, scheduler == "cron")
+    except CrontabError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    print(f"=====> cron {'on' if scheduler == 'cron' else 'off'}")
+    if scheduler == "systemd" and timer != "enabled":
+        print(f"Now enable the timer as root: systemctl enable --now {TIMER}")
+    elif scheduler != "systemd" and timer == "enabled":
+        print(f"The systemd timer is enabled too; disable it as root: systemctl disable --now {TIMER}")
+    return EXIT_OK
 
 
 def _notify_test(properties: Properties, app: str, number: int | None) -> int:
@@ -312,6 +353,8 @@ def main(argv: list[str] | None = None) -> int:
             return _report(properties, args.target)
         if command == "poll":
             return _poll(properties, args.redeploy)
+        if command == "schedule":
+            return _schedule(properties, args.scheduler)
         return _notify_test(properties, args.app, args.pull_request)
     except ConfigError as exc:
         print(f"Error: {exc}", file=sys.stderr)
