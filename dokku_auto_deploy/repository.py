@@ -5,9 +5,9 @@ import netrc
 import urllib.parse
 from pathlib import Path
 
-FORGES = ("github", "gitlab")
+FORGES = ("github", "gitlab", "forgejo")
 # Hosts whose forge is known; any other host needs the `forge` setting
-KNOWN_HOSTS = {"github.com": "github", "gitlab.com": "gitlab"}
+KNOWN_HOSTS = {"github.com": "github", "gitlab.com": "gitlab", "codeberg.org": "forgejo"}
 
 
 class RepositoryError(ValueError):
@@ -44,8 +44,8 @@ class Repository:
     def __post_init__(self) -> None:
         if self.forge not in FORGES:
             raise RepositoryError(f"unknown forge {self.forge!r} (expected one of: {', '.join(FORGES)})")
-        if self.forge == "github" and len(self.path.split("/")) != 2:
-            raise RepositoryError(f"a GitHub repository URL has exactly owner/name after the host: {self.url}")
+        if self.forge in ("github", "forgejo") and len(self.path.split("/")) != 2:
+            raise RepositoryError(f"a {self.forge} repository URL has exactly owner/name after the host: {self.url}")
 
     @property
     def host(self) -> str:
@@ -65,6 +65,8 @@ class Repository:
         parts = urllib.parse.urlsplit(self.url)
         if self.forge == "gitlab":
             return f"{parts.scheme}://{parts.netloc}/api/v4"
+        if self.forge == "forgejo":
+            return f"{parts.scheme}://{parts.netloc}/api/v1"
         if self.host == "github.com":
             return "https://api.github.com"
         return f"{parts.scheme}://{parts.netloc}/api/v3"  # GitHub Enterprise Server

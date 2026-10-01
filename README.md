@@ -1,14 +1,14 @@
 # dokku-auto-deploy
 
-A [Dokku](https://dokku.com/) plugin that deploys each app from a branch of its GitHub or GitLab repository as soon as
-that commit's CI passes, without giving the forge any credential to your server.
+A [Dokku](https://dokku.com/) plugin that deploys each app from a branch of its GitHub, GitLab or Forgejo repository as
+soon as that commit's CI passes, without giving the forge any credential to your server.
 
 It runs on the Dokku host itself: every minute it asks the forge API for the head of each app's branch, waits for that
 commit's CI to succeed and then runs `dokku git:sync --build` with that exact commit. The result can be posted as a
 comment on the pull/merge requests that were merged and/or sent to a Telegram group.
 
-Supported forges: GitHub (github.com and GitHub Enterprise Server, with GitHub Actions) and GitLab (gitlab.com and
-self-managed, with GitLab CI/CD).
+Supported forges: GitHub (github.com and GitHub Enterprise Server, with GitHub Actions), GitLab (gitlab.com and
+self-managed, with GitLab CI/CD) and Forgejo (Codeberg and self-hosted, with Forgejo Actions).
 
 Settings are per app, with a global fallback: the typical gitflow setup deploys `develop` to `myproject-stg` and `main`
 to `myproject-prd`, but each app picks its own repository, branch, CI workflow and notification channels.
@@ -34,9 +34,9 @@ For each app with a `repository` set, every run:
 1. Reads the head commit of the app's branch.
 2. If that commit was already handled, does nothing.
 3. Looks for the CI of that commit, triggered by a push to that branch: the runs of the configured workflow file
-   (GitHub) or the push pipeline (GitLab); the latest one counts, so a successful retry wins. If there is none yet or
-   it is still running, waits for the next run. If it failed, records it and does nothing else. With `workflow none`
-   this step is skipped and every new commit is deployed.
+   (GitHub, Forgejo) or the push pipeline (GitLab); the latest one counts, so a successful retry wins. If there is none
+   yet or it is still running, waits for the next run. If it failed, records it and does nothing else. With
+   `workflow none` this step is skipped and every new commit is deployed.
 4. If Dokku already runs that commit (its last successful deploy, per `dokku apps:report <app>
    --app-deploy-source-metadata`), only records it: no rebuild, no notification. If the app is locked in Dokku, waits
    for the next run.
@@ -59,7 +59,7 @@ Losing that state is harmless: apps already running the branch head are only rec
 - Dokku 0.23+ (`git:sync`, `apps:locked`); 0.26+ to skip rebuilding commits an app already runs; tested on 0.38.28.
 - Python 3.11+ on the host (Debian 12+, Ubuntu 24.04+). The plugin install checks it.
 - A CI workflow that runs on pushes to the deployed branches (see "CI workflow"), unless the app uses
-  `workflow none`.
+  `workflow none`. On Forgejo, waiting for CI needs Forgejo 12+ (the version that added the Actions runs API).
 
 ## Installation
 
@@ -93,7 +93,7 @@ The plugin reads the forge API token from the credential `dokku git:auth` stores
 dokku user's `.netrc`); Dokku uses the same credential to fetch private repositories. Give it through a pipe:
 
 ```sh
-cat token-file | dokku git:auth <host> <token-username>      # e.g. github.com, gitlab.com
+cat token-file | dokku git:auth <host> <token-username>      # e.g. github.com, gitlab.com, codeberg.org
 rm token-file
 ```
 
@@ -129,6 +129,12 @@ token, for a single project) with role Reporter and scopes `read_api` and `read_
 channel, use scope `api` instead of `read_api`, as posting a note needs it. GitLab creates a bot user for the token,
 and comments appear as that bot. Personal access tokens work too, with the same scopes. Any non-empty
 `<token-username>` works for Git over HTTPS with a token.
+
+#### Forgejo
+
+Create an access token (user settings, Applications) for a bot user with access to the repositories, with scope
+`read:repository`, plus `write:issue` for the `comment` channel (comments on pull requests go through the issues API).
+`<token-username>` is the bot user's login.
 
 ### 2. Apps
 
@@ -171,16 +177,17 @@ from (`(global)` when inherited) and a `problem:` line if the app's settings are
 
 | Key | Scope | Meaning |
 |---|---|---|
-| `repository` | app | Repository web URL (`https://github.com/owner/name`, `https://gitlab.com/group/subgroup/project`). Setting it enables auto-deploy for the app; unsetting it disables it |
+| `repository` | app | Repository web URL (`https://github.com/owner/name`, `https://gitlab.com/group/subgroup/project`, `https://codeberg.org/owner/name`). Setting it enables auto-deploy for the app; unsetting it disables it |
 | `branch` | app | Branch to deploy (required) |
-| `forge` | app | Forge type, only for hosts other than github.com and gitlab.com: `github` (GitHub Enterprise Server) or `gitlab` (self-managed GitLab) |
-| `workflow` | app, global | GitHub: workflow file whose run must succeed, e.g. `.github/workflows/ci.yml`. GitLab: any value but `none` waits for the push pipeline (e.g. `.gitlab-ci.yml`). `none` deploys every new commit without waiting for CI (required) |
+| `forge` | app | Forge type, only for hosts other than github.com, gitlab.com and codeberg.org: `github` (GitHub Enterprise Server), `gitlab` (self-managed GitLab) or `forgejo` |
+| `workflow` | app, global | GitHub, Forgejo: workflow file whose run must succeed, e.g. `.github/workflows/ci.yml` or `.forgejo/workflows/ci.yml` (Forgejo only looks at the file name). GitLab: any value but `none` waits for the push pipeline (e.g. `.gitlab-ci.yml`). `none` deploys every new commit without waiting for CI (required) |
 | `notify` | app, global | Comma-separated channels: `comment`, `telegram`, both, or `none` (default: none) |
 | `telegram-chat` | app, global | Group id (`-100...`), or group id `_` topic id (required when `notify` has `telegram`) |
 | `telegram-bot-token` | global | Telegram bot token, read from stdin |
 
 The API is found from the repository URL: `api.github.com` for github.com, `/api/v3` on other GitHub hosts, `/api/v4`
-on GitLab hosts. A GitLab installed under a path (`https://example.com/gitlab/...`) isn't supported.
+on GitLab hosts, `/api/v1` on Forgejo hosts. A forge installed under a path (`https://example.com/gitlab/...`) isn't
+supported.
 
 Settings live in Dokku's property store (`/var/lib/dokku/config/auto-deploy/`); deleting or renaming an app deletes or
 moves its settings too.
@@ -207,8 +214,8 @@ moves its settings too.
    `--pull-request`, it also comments on that pull request (merge request on GitLab) of the app's repository.
 
 Messages are HTML: the commit link sits behind the word "commit", each pull/merge request link spans its reference and
-title ("#12 Title" on GitHub, "!12 Title" on GitLab), and the app URL (from `dokku url <app>`) is shown in full.
-Comments link the commit and show the app URL too.
+title ("#12 Title" on GitHub and Forgejo, "!12 Title" on GitLab), and the app URL (from `dokku url <app>`) is shown in
+full. Comments link the commit and show the app URL too.
 
 ### 5. First run
 
@@ -317,7 +324,8 @@ on:
     branches: [develop, main]
 ```
 
-On GitLab, the pipeline of a push to the branch counts (`source` `push`; merge request pipelines don't). A pipeline
+Forgejo Actions uses the same syntax, from `.forgejo/workflows/` (or `.github/workflows/`). On GitLab, the pipeline of
+a push to the branch counts (`source` `push`; merge request pipelines don't). A pipeline
 waiting for a manual job counts as still running, so the deploy waits for it.
 
 ## Command reference

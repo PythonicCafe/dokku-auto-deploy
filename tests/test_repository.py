@@ -36,6 +36,7 @@ class TestNormalizeUrl:
 def test_detect_forge_from_well_known_hosts_only():
     assert detect_forge("https://github.com/Org/proj") == "github"
     assert detect_forge("https://gitlab.com/group/proj") == "gitlab"
+    assert detect_forge("https://codeberg.org/Org/proj") == "forgejo"
     assert detect_forge("https://git.example.com/Org/proj") is None
 
 
@@ -51,9 +52,10 @@ class TestRepository:
         assert repository.host == "git.example.com"
         assert repository.api_url == "https://git.example.com:8443/api/v3"
 
-    def test_github_repository_has_owner_and_name_only(self):
+    @pytest.mark.parametrize("forge", ["github", "forgejo"])
+    def test_owner_and_name_only(self, forge):
         with pytest.raises(RepositoryError, match="owner/name"):
-            Repository("https://github.com/Org/sub/proj", "github")
+            Repository("https://git.example.com/Org/sub/proj", forge)
 
     def test_unknown_forge(self):
         with pytest.raises(RepositoryError, match="unknown forge"):

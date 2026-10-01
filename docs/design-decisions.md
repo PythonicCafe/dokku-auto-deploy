@@ -94,7 +94,7 @@ CI).
 
 Each forge implements the same small interface (`forge.Forge`): branch head, CI status of a commit, commits between
 two SHAs, recently merged changes, comment, commit URL. The forge comes from the repository host (github.com,
-gitlab.com) or the app's `forge` setting.
+gitlab.com, codeberg.org) or the app's `forge` setting.
 
 What "CI passed" means, per forge (the latest run counts, so a successful retry replaces a failure):
 
@@ -105,12 +105,23 @@ What "CI passed" means, per forge (the latest run counts, so a successful retry 
   (2026-09): `success` passes; `failed`, `canceled` and `skipped` fail; everything else (`created`, `pending`,
   `running`, `manual`, `scheduled`, ...) waits. A pipeline blocked on a manual job therefore waits until someone runs
   it.
+- Forgejo: the Actions runs API, filtered by SHA, `event=push`, `ref=refs/heads/<branch>` and `workflow_id` (the
+  workflow's file name, e.g. `ci.yml`, whatever its directory). The runs endpoint exists since Forgejo 12 with
+  `head_sha` and `event` filters; `ref` and `workflow_id` only came in 15, and earlier versions ignore unknown
+  parameters, so the answer is filtered again by `workflow_id` and `prettyref` (the branch) (checked in Forgejo's
+  source, tags v12.0.0 to v15.0.0). Checked on Codeberg (Forgejo 16.0.0-dev, 2026-09-29), anonymously, on
+  `forgejo/docs`: `ref` needs the full `refs/heads/<branch>` (a bare branch name matches nothing) and `workflow_id` the
+  bare file name (a path matches nothing); runs have `workflow_id` `cli.yml`, `prettyref` `next`, `event` `push`.
+  Statuses: `success` passes; `failure`, `cancelled` and `skipped` fail; `waiting`, `running`, `blocked` and `unknown`
+  wait. Older Forgejo versions can't wait for CI (`workflow none` still works with them).
 
 How a merged change is recognized in the deployed range: GitHub's `merge_commit_sha` is the merge commit, the squash
 commit or the last rebased commit. GitLab has `merge_commit_sha` (null for fast-forward merges) and `squash_commit_sha`;
 when both are null (a fast-forward merge), the MR head `sha` is the commit that landed on the branch. The head `sha` is
 not used otherwise: it can reach the branch through another MR built on top of this one, and this MR would then be
 notified for a deploy that isn't its own.
+Forgejo's `merge_commit_sha` works like GitHub's; its pull request list can't filter by base branch, so that's done
+after fetching (50 per page, Forgejo's default maximum).
 
 ## Dokku's deploy lock: wait, never unlock
 
