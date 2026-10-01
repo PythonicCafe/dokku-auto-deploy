@@ -66,14 +66,14 @@ Losing that state is harmless: apps already running the branch head are only rec
 Install a released version (the tags are listed in the repository's releases), as root:
 
 ```sh
-dokku plugin:install https://github.com/PythonicCafe/dokku-auto-deploy.git --committish v0.1.0
+dokku plugin:install https://github.com/PythonicCafe/dokku-auto-deploy.git --committish 0.1.0
 ```
 
 Without `--committish`, Dokku installs the repository's default branch, which may have unreleased changes: prefer a
 tag. To upgrade later, or go back to a previous version:
 
 ```sh
-dokku plugin:update auto-deploy v0.2.0
+dokku plugin:update auto-deploy 0.2.0
 ```
 
 The plugin is named `auto-deploy` (Dokku drops the `dokku-` prefix of the repository name), so its commands are
@@ -89,8 +89,10 @@ All commands below run on the Dokku host, as root or as a user allowed to run `d
 
 ### 1. Token
 
-The plugin reads the forge API token from the credential `dokku git:auth` stores for the repository host (in the
-dokku user's `.netrc`); Dokku uses the same credential to fetch private repositories. Give it through a pipe:
+One token per forge host does both jobs: Dokku uses it to clone the repository (`git:sync` over HTTPS, private
+repositories included) and the plugin uses it for the API calls (branch head, CI, merged changes, comments). It is the
+credential `dokku git:auth` stores for the repository host, in the dokku user's `.netrc`, and it works the same way on
+GitHub, GitLab and Forgejo. Give it through a pipe:
 
 ```sh
 cat token-file | dokku git:auth <host> <token-username>      # e.g. github.com, gitlab.com, codeberg.org
@@ -102,9 +104,23 @@ The token must come through a pipe: Dokku only reads it from standard input when
 it as an argument, which shows it in the process list. A token is needed even for public repositories: the plugin
 calls the API every minute and unauthenticated calls are rate-limited (60 per hour on GitHub).
 
-Dokku keeps one credential per host, so one token serves every app from that host. Comments are posted as the
-token's owner, so a bot account is better than your own: the comments don't look like yours, and the token doesn't
-depend on a person staying in the organization.
+Dokku keeps one credential per host, so one token serves every app from that host: the host in the app's `repository`
+URL picks it, and `dokku auto-deploy:report <app> --auto-deploy-forge-login` shows which account it belongs to.
+Comments are posted as the token's owner, so a bot account is better than your own: the comments don't look like yours,
+and the token doesn't depend on a person staying in the organization.
+
+Repositories of several owners (organizations or users) on the same host share that one token, so it must reach all of
+them. Use one bot account that is a member of every owner, with read access to the deployed repositories (read access
+is enough to comment on pull/merge requests), and a token that isn't bound to a single owner:
+
+- GitHub: a classic personal access token with the `repo` scope. Fine-grained tokens are bound to one resource owner.
+  The `repo` scope allows writing, so limit what the bot can do through its role in each repository (Read).
+- GitLab: a personal access token of the bot user (group and project access tokens are bound to their group or
+  project).
+- Forgejo: the bot user's access token already covers every repository the bot can read.
+
+Separate tokens per project on the same host aren't supported: the clone would need its own credential too, and
+putting it in the `git:sync` URL would show it in the process list.
 
 #### GitHub
 
@@ -185,9 +201,12 @@ from (`(global)` when inherited) and a `problem:` line if the app's settings are
 | `telegram-chat` | app, global | Group id (`-100...`), or group id `_` topic id (required when `notify` has `telegram`) |
 | `telegram-bot-token` | global | Telegram bot token, read from stdin |
 
-The API is found from the repository URL: `api.github.com` for github.com, `/api/v3` on other GitHub hosts, `/api/v4`
-on GitLab hosts, `/api/v1` on Forgejo hosts. A forge installed under a path (`https://example.com/gitlab/...`) isn't
-supported.
+Self-hosted forges: set `forge` for any host other than github.com, gitlab.com and codeberg.org (when it's unset, the
+plugin only recognizes those three hosts). Every URL is then built from the repository URL's scheme, host and port:
+the API (`/api/v3` for GitHub Enterprise Server, `/api/v4` for GitLab, `/api/v1` for Forgejo), the clone URL and the
+commit links. Only github.com has its API elsewhere (`api.github.com`). Links to pull/merge requests come from the
+forge's own API answers, so they use the URL the forge is configured with. A forge installed under a path
+(`https://example.com/gitlab/...`) isn't supported.
 
 Settings live in Dokku's property store (`/var/lib/dokku/config/auto-deploy/`); deleting or renaming an app deletes or
 moves its settings too.
@@ -360,7 +379,7 @@ Tests run the real code, and the plugin's bash entry points, against a local fak
 a fake `dokku` script; they never touch the network or a real Dokku. See [`AGENTS.md`](AGENTS.md) for the conventions.
 
 Releasing: bump `version` in `plugin.toml` and `__version__` in `dokku_auto_deploy/__init__.py` (a test checks they
-match), merge into `main` and tag it (`git tag v0.2.0 && git push --tags`).
+match), merge into `main` and tag it without a `v` prefix (`git tag 0.2.0 && git push --tags`).
 
 ## License
 

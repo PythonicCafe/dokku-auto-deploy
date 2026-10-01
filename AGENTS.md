@@ -57,7 +57,8 @@
 - Gitflow: branch `feature/<name>` from `develop` or `hotfix/<name>` from `main`, and open a PR. Never commit to
   `main` or `develop`.
 - Commit titles in English, present tense ("Adds", "Fixes"), names in backticks.
-- A release bumps `version` in `plugin.toml` and `__version__` together (a test checks it) and is installed by tag.
+- A release bumps `version` in `plugin.toml` and `__version__` together (a test checks it) and is installed by tag (no
+  `v` prefix: `0.2.0`).
 
 ## References
 
