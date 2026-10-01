@@ -8,7 +8,8 @@ for that commit's CI to succeed and then runs `dokku git:sync --build` with that
 as a comment on the pull requests that were merged and/or sent to a Telegram group.
 
 Built for a gitflow setup where `develop` is deployed to a staging app (`stg`) and `main` to production (`prd`), but a
-repository can have only one of them, and branches and app names are configurable.
+repository can have only one of them, and branches and app names are configurable. The defaults assume the repository
+has `develop` and `main` branches.
 
 Features:
 
@@ -41,7 +42,24 @@ For each target (a repository environment: `develop` -> `myproject-stg`, `main` 
    branch since the last successful deploy of that app (several PRs can land in one deploy); if there is no such PR,
    there is no comment.
 
-State is kept in a small JSON file (`/var/lib/dokku-auto-deploy/state.json` by default).
+State is kept in a small JSON file (`/var/lib/dokku-auto-deploy/state.json` by default), one entry per app:
+
+```json
+"myproject-stg": {
+  "sha": "274d...",
+  "status": "deployed",
+  "at": "2026-09-28T23:15:02+00:00",
+  "deployed_sha": "274d..."
+}
+```
+
+- `sha`: the last branch head the tool acted on, whatever the outcome; a new run only acts again when the head changes.
+- `status`: what happened to `sha`: `deployed`, `deploy_failed` or `ci_failed`.
+- `deployed_sha`: the last commit deployed successfully. It differs from `sha` after a failed deploy, and it bounds
+  which merged pull requests get a comment on the next successful deploy.
+
+Deleting an app's entry (or the whole file) is safe: apps already running the branch head are only recorded, not
+rebuilt.
 
 ## Requirements
 
@@ -69,6 +87,10 @@ python3 -m venv /opt/pipx-bin
 ```
 
 If pipx complains about an old `uv`, add `--backend pip`. To upgrade later: `pipx upgrade --global dokku-auto-deploy`.
+
+Global installs live outside root's home, so a plain `pipx list` shows nothing; use `pipx list --global`. The package
+is in `/opt/pipx/venvs/dokku-auto-deploy/` (its Python is `/opt/pipx/venvs/dokku-auto-deploy/bin/python`) and the
+command is a symlink in `/usr/local/bin/`.
 
 ## Setup
 
@@ -100,8 +122,13 @@ Store it and give it to Dokku, which uses it to fetch private repositories:
 install -d -m 700 /etc/dokku-auto-deploy
 install -m 600 /dev/null /etc/dokku-auto-deploy/github-token
 editor /etc/dokku-auto-deploy/github-token        # paste the token
-dokku git:auth github.com <token-username> < /etc/dokku-auto-deploy/github-token
+cat /etc/dokku-auto-deploy/github-token | dokku git:auth github.com <token-username>
 ```
+
+`<token-username>` is the login of the account that owns the token (e.g. the bot user). The token must come through a
+pipe as above: Dokku only reads it from standard input when stdin is a pipe (`[[ -p /dev/stdin ]]`, checked in
+v0.38.28), so a `< file` redirection fails with "Missing password". Avoid passing it as an argument, which shows it in
+the process list.
 
 ### 2. Dokku apps
 
@@ -309,6 +336,8 @@ dokku-auto-deploy [-c path] notify-test               send a test Telegram messa
 dokku-auto-deploy [-c path] config show               validate the config and print the resolved targets
 ```
 
+- Run every command as root: config, token and state files are root-only (a regular user gets a "permission denied"
+  error naming the file).
 - `-c/--config`: config file (default `/etc/dokku-auto-deploy/config.toml`, or the `DOKKU_AUTO_DEPLOY_CONFIG`
   environment variable).
 - `-v/--verbose`: also log targets that are waiting for CI.
