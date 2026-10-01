@@ -1,5 +1,6 @@
 """Minimal Telegram Bot API client (stdlib only): sending a message to a group or to a topic of a group."""
 
+import http.client
 import json
 import re
 import urllib.error
@@ -56,3 +57,6 @@ class Telegram:
             raise TelegramError(f"could not reach Telegram API: {exc.reason}") from None
         except TimeoutError:
             raise TelegramError(f"Telegram API did not answer in {HTTP_TIMEOUT}s") from None
+        except (OSError, http.client.HTTPException, ValueError) as exc:
+            # Only the type: messages of these (e.g. InvalidURL for a token with a newline) can contain the URL
+            raise TelegramError(f"could not send the message ({type(exc).__name__})") from None

@@ -108,6 +108,38 @@ def forge_for(config: AppConfig) -> Forge:
     return make_forge(config.repository, token)
 
 
+def record(properties: Properties, app: str, sha: str, status: str, deployed_sha: str | None) -> None:
+    state = {
+        "sha": sha,
+        "status": status,
+        "at": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
+        "deployed_sha": deployed_sha,
+    }
+    save_state(properties, app, state)
+
+
+def notify_deploy(
+    config: AppConfig,
+    forge: Forge,
+    sha: str,
+    success: bool,
+    output: str,
+    previous_deployed: str | None,
+    telegram_token: str | None,
+    telegram_api: str,
+) -> None:
+    app = config.app
+    changes: list[Change] = []
+    if sha != previous_deployed:
+        try:
+            changes = merged_changes(forge, config, previous_deployed, sha)
+        except (ForgeError, KeyError, ValueError) as exc:
+            logger.warning("[%s] could not list merged changes: %s", app, exc)
+    result = DeployResult(config, sha, success, output, changes, forge.commit_url(sha), dokku.app_url(app))
+    for failure in notify(result, forge, telegram_token, telegram_api):
+        logger.warning("[%s] notification failed: %s", app, failure)
+
+
 def process_app(
     config: AppConfig,
     forge: Forge,
@@ -137,41 +169,29 @@ def process_app(
         return
     if action == "ci_failed":
         logger.info("[%s] %s@%s: CI failed, not deploying", app, branch, sha[:8])
-        status = "ci_failed"
-    elif not redeploy and dokku.runs_commit(app, sha):
+        record(properties, app, sha, "ci_failed", last_deployed)
+        return
+    if not redeploy and dokku.runs_commit(app, sha):
         logger.info("[%s] %s@%s: app already runs this commit, recorded without rebuilding", app, branch, sha[:8])
-        status = "deployed"
-        last_deployed = sha
-    else:
-        if dokku.is_locked(app):
-            logger.info("[%s] %s@%s: app locked (deploy in progress or apps:lock), waiting", app, branch, sha[:8])
-            return
-        logger.info("[%s] deploying %s@%s", app, branch, sha[:8])
-        success, output = dokku.git_sync(app, config.repository.clone_url, sha, on_output)
-        if not success and dokku.is_locked(app):
-            logger.info("[%s] app got locked during our deploy attempt, will retry", app)
-            return
-        status = "deployed" if success else "deploy_failed"
-        logger.info("[%s] %s: %s", app, sha[:8], status)
-        if config.notify:
-            changes: list[Change] = []
-            if sha != last_deployed:
-                try:
-                    changes = merged_changes(forge, config, last_deployed, sha)
-                except (ForgeError, KeyError, ValueError) as exc:
-                    logger.warning("[%s] could not list merged changes: %s", app, exc)
-            result = DeployResult(config, sha, success, output, changes, forge.commit_url(sha), dokku.app_url(app))
-            for failure in notify(result, forge, telegram_token, telegram_api):
-                logger.warning("[%s] notification failed: %s", app, failure)
-        if success:
-            last_deployed = sha
-    state = {
-        "sha": sha,
-        "status": status,
-        "at": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
-        "deployed_sha": last_deployed,
-    }
-    save_state(properties, app, state)
+        record(properties, app, sha, "deployed", sha)
+        return
+    if dokku.is_locked(app):
+        logger.info("[%s] %s@%s: app locked (deploy in progress or apps:lock), waiting", app, branch, sha[:8])
+        return
+    logger.info("[%s] deploying %s@%s", app, branch, sha[:8])
+    success, output = dokku.git_sync(app, config.repository.clone_url, sha, on_output)
+    if not success and dokku.is_locked(app):
+        logger.info("[%s] app got locked during our deploy attempt, will retry", app)
+        return
+    status = "deployed" if success else "deploy_failed"
+    logger.info("[%s] %s: %s", app, sha[:8], status)
+    # Recorded before notifying: whatever happens while notifying, this deploy must not run again
+    record(properties, app, sha, status, sha if success else last_deployed)
+    if config.notify:
+        try:
+            notify_deploy(config, forge, sha, success, output, last_deployed, telegram_token, telegram_api)
+        except Exception as exc:
+            logger.warning("[%s] notification failed: %s", app, exc)
 
 
 @contextmanager

@@ -17,7 +17,8 @@ from dokku_auto_deploy.properties import Properties
 class FakeAPI:
     """In-process HTTP server standing in for the forge APIs and Telegram.
 
-    `routes` maps "METHOD /path" (no query string) to a (status, JSON body) pair; every request is recorded in
+    `routes` maps "METHOD /path" (no query string) to a (status, JSON body) pair (bytes are sent as they are; status 0
+    closes the connection without an answer); every request is recorded in
     `requests` as (method, path, query, body) so tests can assert on what was sent. `response_delay` (seconds) makes
     every answer slow, to exercise client timeouts.
     """
@@ -49,7 +50,10 @@ class FakeAPI:
                 api.headers.append(dict(self.headers))
                 time.sleep(api.response_delay)
                 status, payload = api.routes.get(f"{method} {parsed.path}", (404, {"message": "Not Found"}))
-                data = json.dumps(payload).encode()
+                if status == 0:  # Drop the connection without answering
+                    self.close_connection = True
+                    return
+                data = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(data)))

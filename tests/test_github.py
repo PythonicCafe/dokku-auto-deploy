@@ -87,3 +87,16 @@ def test_commit_url(github, fake_api):
 
 def test_github_com_uses_api_github_com():
     assert GitHub(Repository("https://github.com/Org/proj", "github"), "T").api == "https://api.github.com"
+
+
+@pytest.mark.parametrize(
+    "response, message",
+    [
+        pytest.param((0, None), "RemoteDisconnected", id="connection-dropped"),
+        pytest.param((200, b"<html>"), "not JSON", id="not-json"),
+    ],
+)
+def test_broken_answers_are_forge_errors(github, fake_api, response, message):
+    fake_api.routes["GET /api/v3/repos/Org/proj/branches/main"] = response
+    with pytest.raises(ForgeError, match=message):
+        github.branch_head("main")

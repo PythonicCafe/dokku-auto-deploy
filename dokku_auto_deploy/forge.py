@@ -1,6 +1,7 @@
 """What the deploy cycle needs from a forge (the service hosting the repository), independent of which one it is."""
 
 import dataclasses
+import http.client
 import json
 import urllib.error
 import urllib.parse
@@ -60,6 +61,12 @@ class Forge:
             raise ForgeError(f"could not reach {self.name} API at {self.api}: {exc.reason}") from None
         except TimeoutError:
             raise ForgeError(f"{self.name} API at {self.api} did not answer in {HTTP_TIMEOUT}s") from None
+        except (OSError, http.client.HTTPException) as exc:  # Connection dropped mid-response, etc.
+            raise ForgeError(f"{self.name} API {method} {path}: {type(exc).__name__}: {exc}") from None
+        except json.JSONDecodeError:
+            raise ForgeError(f"{self.name} API {method} {path}: the answer is not JSON") from None
+        except ValueError as exc:  # Only the type: e.g. an invalid header value would be the token itself
+            raise ForgeError(f"{self.name} API {method} {path}: invalid request ({type(exc).__name__})") from None
 
     def branch_head(self, branch: str) -> str:
         raise NotImplementedError

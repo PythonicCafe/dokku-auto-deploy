@@ -67,9 +67,12 @@ def runs_commit(app: str, sha: str) -> bool:
 
 def app_url(app: str) -> str | None:
     """First URL of the app (`dokku url <app>`, from its domains and proxy settings); None if it has none."""
-    result = subprocess.run(
-        ["dokku", "url", app], capture_output=True, text=True, check=False, timeout=LOCK_CHECK_TIMEOUT
-    )
+    try:
+        result = subprocess.run(
+            ["dokku", "url", app], capture_output=True, text=True, check=False, timeout=LOCK_CHECK_TIMEOUT
+        )
+    except subprocess.TimeoutExpired:
+        return None
     for line in result.stdout.splitlines():
         if line.strip().startswith(("http://", "https://")):
             return line.strip()

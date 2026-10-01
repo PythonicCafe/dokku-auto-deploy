@@ -50,3 +50,10 @@ class TestSendMessage:
 
     def test_repr_hides_the_token(self):
         assert "TOKEN" not in repr(Telegram("TOKEN"))
+
+
+def test_token_with_a_newline_never_shows_in_the_error(fake_api):
+    with pytest.raises(TelegramError) as exc:
+        Telegram("123:AB\nSECRET", fake_api.url).send_message("-100", "hi")
+    assert "SECRET" not in str(exc.value)
+    assert "InvalidURL" in str(exc.value)

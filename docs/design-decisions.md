@@ -173,6 +173,9 @@ rebase merges, several changes merged while CI was running, and changes of a fai
 successful one. Without `deployed_sha`, or if the comparison fails (rewritten history), only the head counts.
 Redeploying the same SHA with `--redeploy` comments on nothing (no change is new) but still sends Telegram messages.
 
+A deploy's result is saved right after `git:sync` returns, before notifying: an error while listing changes or
+notifying (e.g. a dropped connection) must not leave a finished deploy unrecorded, which would rebuild it.
+
 Notification channels are best-effort and independent: a failure is logged and never changes the deploy status or the
 other channels. Telegram is sent synchronously so failures reach the log, with a 30s timeout: answers usually take under
 1s, but some calls took about 10s (seen in 2026-09 with an invalid chat id, cause not identified), which a 10s timeout

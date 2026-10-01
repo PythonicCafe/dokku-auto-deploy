@@ -304,3 +304,25 @@ def test_deployed_head_does_not_ask_for_ci_again(app_env, fake_api, fake_dokku):
     write_state(app_env, sha="c3", status="deployed", deployed_sha="c3")
     do_poll(app_env, fake_api)
     assert [path for _, path, _, _ in fake_api.requests] == [f"{API}/branches/develop"]
+
+
+class TestRecordBeforeNotifying:
+    def test_failed_deploy_is_recorded_even_if_listing_changes_breaks(self, app_env, fake_api, fake_dokku):
+        github_state(fake_api)
+        fake_api.routes[f"GET {API}/pulls"] = (0, None)
+        fake_dokku.set(exit_code=1)
+        write_state(app_env, sha="c1", status="deployed", deployed_sha="c1")
+        assert do_poll(app_env, fake_api) == 0
+        assert (read_state(app_env)["status"], read_state(app_env)["deployed_sha"]) == ("deploy_failed", "c1")
+        assert [path for path, _ in fake_api.posts()] == ["/botTG/sendMessage"]
+
+    def test_unexpected_notification_error_keeps_the_record(self, app_env, fake_api, fake_dokku, monkeypatch):
+        def broken_notify(*args):
+            raise RuntimeError("boom")
+
+        github_state(fake_api)
+        fake_dokku.set()
+        monkeypatch.setattr("dokku_auto_deploy.poll.notify", broken_notify)
+        assert do_poll(app_env, fake_api) == 0
+        assert read_state(app_env)["deployed_sha"] == "c3"
+        assert len(fake_dokku.syncs) == 1
