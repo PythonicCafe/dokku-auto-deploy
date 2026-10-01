@@ -58,13 +58,19 @@ mode, fails immediately (it does not wait) if the lock is taken, and deletes the
 
 ## Commits Dokku already runs are not rebuilt
 
-Before deploying, the tool reads the app's `GIT_REV` (`dokku config:get <app> GIT_REV`), which Dokku sets on every git
-deploy (`git_build` in Dokku's `plugins/git/functions`, checked 2026-09). If it already is the branch head, the commit
-is only recorded as deployed. Without this, the first run (or a lost state file) rebuilt every app, production
-included, even when nothing changed. `GIT_REV` was preferred over `git:report --git-sha` because the latter is
-`git rev-parse HEAD` of the bare app repo, whose `HEAD` may not point to the deploy branch. Known limit: Dokku sets
-`GIT_REV` before building, so after a failed manual deploy of commit X it says X; if X then becomes the branch head,
-the tool records it without building. `poll --force <app>` rebuilds regardless.
+Before deploying, the tool asks Dokku what the app's last successful deploy was: `dokku apps:report <app>
+--app-deploy-source-metadata`. If that is the branch head, the commit is only recorded as deployed. Without this, the
+first run (or a lost state file) rebuilt every app, production included, even when nothing changed.
+
+Dokku writes `deploy-source-metadata` in the `deploy-source-set` trigger, which only runs after a deploy succeeded:
+`<sha>` for a `git push`, `<remote>#<sha>` for `git:sync` (since Dokku 0.26.0, #4862). Checked on a Dokku 0.38.28
+server (2026-09-30) with a test app: a build that fails (`RUN false` in the Dockerfile) and a build whose container
+fails the checks both left the metadata at the previous commit, through `git push` and through `git:sync`.
+
+`GIT_REV` (`dokku config:get <app> GIT_REV`) was used before and dropped: Dokku sets it before building, so in the
+same test it named each commit whose deploy had just failed. A failed manual deploy of the branch head would then have
+been recorded as deployed. `git:report --git-sha` doesn't help either: it runs `git rev-parse HEAD` in the app's bare
+repo, which printed the literal string `HEAD` on that server. `poll --force <app>` rebuilds regardless.
 
 ## Failed deploys are not retried automatically
 

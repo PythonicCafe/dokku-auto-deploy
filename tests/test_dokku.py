@@ -1,6 +1,8 @@
 import sys
 
-from dokku_auto_deploy.dokku import app_url, deployed_rev, git_sync, is_locked, run_streaming
+import pytest
+
+from dokku_auto_deploy.dokku import app_url, git_sync, is_locked, run_streaming, runs_commit
 
 
 def test_run_streaming_returns_output_and_code_while_streaming():
@@ -29,15 +31,20 @@ def test_git_sync_uses_exact_sha(fake_dokku):
     assert fake_dokku.syncs == ["git:sync --build app https://github.com/Org/proj.git abc"]
 
 
-def test_deployed_rev_reads_git_rev(fake_dokku):
-    fake_dokku.set(git_rev="abc123")
-    assert deployed_rev("app") == "abc123"
-    assert "config:get app GIT_REV" in fake_dokku.calls
-
-
-def test_deployed_rev_is_none_when_unset(fake_dokku):
-    fake_dokku.set(git_rev=None)
-    assert deployed_rev("app") is None
+@pytest.mark.parametrize(
+    "metadata, expected",
+    [
+        pytest.param("abc123", True, id="git-push"),
+        pytest.param("https://github.com/Org/proj.git#abc123", True, id="git-sync"),
+        pytest.param("https://github.com/Org/proj.git#def456", False, id="other-commit"),
+        pytest.param("", False, id="never-deployed"),
+        pytest.param("registry.example.com/app:abc123", False, id="image-deploy"),
+    ],
+)
+def test_runs_commit_reads_the_last_successful_deploy(fake_dokku, metadata, expected):
+    fake_dokku.set(deploy_source=metadata)
+    assert runs_commit("app", "abc123") is expected
+    assert "apps:report app --app-deploy-source-metadata" in fake_dokku.calls
 
 
 def test_app_url_is_the_first_url(fake_dokku):

@@ -34,8 +34,9 @@ For each target (a repository environment: `develop` -> `myproject-stg`, `main` 
 3. Looks for the runs of the configured workflow file for that commit, triggered by a push to that branch. If there is
    none yet or it is still running, waits for the next run. If it failed, records it and does nothing else. With
    `workflow = ""` this step is skipped and every new commit is deployed.
-4. If Dokku already runs that commit (the app's `GIT_REV`), only records it: no rebuild, no notification. If the app
-   is locked in Dokku, waits for the next run.
+4. If Dokku already runs that commit (its last successful deploy, per `dokku apps:report <app>
+   --app-deploy-source-metadata`), only records it: no rebuild, no notification. If the app is locked in Dokku, waits
+   for the next run.
 5. Runs `dokku git:sync --build <app> https://github.com/<owner>/<repo>.git <sha>`, streaming the build log to the
    journal.
 6. Records the result and notifies the configured channels. GitHub comments go to every pull request merged into the
@@ -63,7 +64,8 @@ rebuilt.
 
 ## Requirements
 
-- A Dokku server with `git:sync` (Dokku 0.23+) and `apps:locked`.
+- A Dokku server with `git:sync` (Dokku 0.23+) and `apps:locked`; 0.26+ to skip rebuilding commits an app already
+  runs.
 - Python 3.11+ on the host (Debian 12+, Ubuntu 24.04+).
 - A GitHub Actions workflow that runs on pushes to the deployed branches (see "GitHub Actions workflow"), unless the
   repository is configured with `workflow = ""` (no CI).

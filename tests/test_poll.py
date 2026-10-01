@@ -215,7 +215,7 @@ class TestPoll:
 
     def test_commit_already_running_is_recorded_without_rebuilding(self, tmp_path, fake_api, fake_dokku):
         github_state(fake_api)
-        fake_dokku.set(git_rev="c3")
+        fake_dokku.set(deploy_source="https://example.com/Org/proj.git#c3")
         assert do_poll(make_config(tmp_path), fake_api) == 0
         assert fake_dokku.syncs == []
         assert (read_state(tmp_path)["status"], read_state(tmp_path)["deployed_sha"]) == ("deployed", "c3")
@@ -223,13 +223,15 @@ class TestPoll:
 
     def test_force_rebuilds_even_if_commit_is_already_running(self, tmp_path, fake_api, fake_dokku):
         github_state(fake_api)
-        fake_dokku.set(git_rev="c3")
+        fake_dokku.set(deploy_source="https://example.com/Org/proj.git#c3")
         do_poll(make_config(tmp_path), fake_api, force=["proj-stg"])
         assert len(fake_dokku.syncs) == 1
 
     def test_app_running_another_commit_is_deployed(self, tmp_path, fake_api, fake_dokku):
+        """Regression: `GIT_REV` named the head after a failed manual deploy of it, which was then taken as deployed.
+        Only the last successful deploy counts."""
         github_state(fake_api)
-        fake_dokku.set(git_rev="c1")
+        fake_dokku.set(deploy_source="https://example.com/Org/proj.git#c1")
         do_poll(make_config(tmp_path, notify="[]"), fake_api)
         assert len(fake_dokku.syncs) == 1
 

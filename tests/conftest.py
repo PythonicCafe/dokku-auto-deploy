@@ -78,7 +78,7 @@ FAKE_DOKKU = """#!/bin/sh
 echo "$@" >> "$FAKE_DOKKU_DIR/calls"
 case "$1" in
   apps:locked) [ -f "$FAKE_DOKKU_DIR/locked" ] && exit 0 || exit 1 ;;
-  config:get) [ -f "$FAKE_DOKKU_DIR/git-rev" ] && cat "$FAKE_DOKKU_DIR/git-rev" && exit 0 || exit 1 ;;
+  apps:report) cat "$FAKE_DOKKU_DIR/deploy-source" 2>/dev/null; echo; exit 0 ;;
   url) cat "$FAKE_DOKKU_DIR/url" 2>/dev/null; exit 0 ;;
   git:sync)
     [ -f "$FAKE_DOKKU_DIR/lock-during-sync" ] && touch "$FAKE_DOKKU_DIR/locked"
@@ -99,17 +99,13 @@ class FakeDokku:
         output: str = "",
         locked: bool = False,
         lock_during_sync: bool = False,
-        git_rev: str | None = None,
+        deploy_source: str = "",
         url: str = "",
     ) -> None:
         (self.directory / "url").write_text(url + "\n" if url else "")
         (self.directory / "exit-code").write_text(str(exit_code))
         (self.directory / "output").write_text(output)
-        rev_file = self.directory / "git-rev"
-        if git_rev is None:
-            rev_file.unlink(missing_ok=True)
-        else:
-            rev_file.write_text(git_rev + "\n")
+        (self.directory / "deploy-source").write_text(deploy_source)
         for flag, enabled in (("locked", locked), ("lock-during-sync", lock_during_sync)):
             path = self.directory / flag
             if enabled:
