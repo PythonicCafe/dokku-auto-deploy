@@ -56,6 +56,12 @@ class Change:
     shas: frozenset[str]  # Commits whose presence in the deployed range means this change was merged in it
 
 
+@dataclasses.dataclass
+class MergedChanges:
+    changes: list[Change]
+    page_full: bool  # The forge returned a full page: older changes exist and weren't fetched
+
+
 class Forge:
     """Base class: one instance per repository. Subclasses set `name` and implement the API calls."""
 
@@ -104,8 +110,9 @@ class Forge:
     def commits_between(self, base: str, head: str) -> set[str]:
         raise NotImplementedError
 
-    def merged_changes(self, branch: str) -> list[Change]:
-        """Recently merged changes into `branch`; callers keep the ones whose `shas` are in the deployed range."""
+    def merged_changes(self, branch: str) -> MergedChanges:
+        """Recently merged changes into `branch` (one page); callers keep the ones whose `shas` are in the deployed
+        range."""
         raise NotImplementedError
 
     def comment(self, change: Change, body: str) -> None:

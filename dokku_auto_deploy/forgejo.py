@@ -4,7 +4,7 @@ import posixpath
 import urllib.parse
 from typing import Any
 
-from dokku_auto_deploy.forge import Change, CIStatus, Forge
+from dokku_auto_deploy.forge import Change, CIStatus, Forge, MergedChanges
 from dokku_auto_deploy.repository import Repository
 
 FAILED_STATUSES = frozenset({"failure", "cancelled", "skipped"})
@@ -50,11 +50,11 @@ class Forgejo(Forge):
         comparison = self.request("GET", f"{self.base}/compare/{base}...{head}")
         return {commit["sha"] for commit in comparison["commits"] or []}
 
-    def merged_changes(self, branch: str) -> list[Change]:
+    def merged_changes(self, branch: str) -> MergedChanges:
         """Most recently updated closed pull requests merged into `branch` (the API can't filter by base branch)."""
         params = {"state": "closed", "sort": "recentupdate", "limit": PAGE_SIZE}
         pulls: list[dict[str, Any]] = self.request("GET", f"{self.base}/pulls", params) or []
-        return [
+        changes = [
             Change(
                 number=int(pull["number"]),
                 reference=f"#{pull['number']}",
@@ -68,6 +68,7 @@ class Forgejo(Forge):
             and pull.get("merge_commit_sha")
             and (pull.get("base") or {}).get("ref") == branch
         ]
+        return MergedChanges(changes, page_full=len(pulls) >= PAGE_SIZE)
 
     def comment(self, change: Change, body: str) -> None:
         self.request("POST", f"{self.base}/issues/{change.number}/comments", payload={"body": body})

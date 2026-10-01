@@ -70,7 +70,8 @@ For each app with a `repository` set, every run:
 5. Runs `dokku git:sync --build <app> <repository>.git <sha>`, streaming the build log to the run's output.
 6. Records the result and notifies the configured channels. Comments go to every pull/merge request merged into the
    branch since the last successful deploy of that app (several can land in one deploy); if there is none, there is no
-   comment.
+   comment. Only the most recent ones are looked up (see "State and notified changes" in `docs/design-decisions.md`):
+   after a very long gap, the oldest may be left out, and the log says so.
 
 What was handled is shown by `dokku auto-deploy:report <app>`:
 

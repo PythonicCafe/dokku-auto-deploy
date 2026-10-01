@@ -56,6 +56,22 @@ def change(number, *shas):
     return Change(number, f"#{number}", f"PR {number}", f"https://example.com/{number}", frozenset(shas))
 
 
+class TestMergedPageLimit:
+    def test_warns_when_the_oldest_change_of_a_full_page_was_deployed(self, app_env, fake_api, fake_dokku, caplog):
+        github_state(fake_api, pulls=[pr(number, "c2") for number in range(200, 100, -1)])
+        fake_dokku.set()
+        write_state(app_env, sha="c1", status="deployed", deployed_sha="c1")
+        do_poll(app_env, fake_api)
+        assert "older ones won't be notified" in caplog.text
+
+    def test_quiet_when_the_page_is_not_full(self, app_env, fake_api, fake_dokku, caplog):
+        github_state(fake_api)
+        fake_dokku.set()
+        write_state(app_env, sha="c1", status="deployed", deployed_sha="c1")
+        do_poll(app_env, fake_api)
+        assert "older ones" not in caplog.text
+
+
 def test_select_merged_keeps_changes_with_a_commit_in_the_range():
     changes = [change(1, "a"), change(2, "b"), change(3, "zzz"), change(4, "x", "a")]
     assert [item.number for item in select_merged(changes, {"a", "b"})] == [1, 2, 4]

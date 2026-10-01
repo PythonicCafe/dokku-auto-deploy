@@ -77,7 +77,14 @@ def merged_changes(forge: Forge, config: AppConfig, previous_sha: str | None, sh
             shas |= forge.commits_between(previous_sha, sha)
         except ForgeError as exc:
             logger.warning("[%s] compare %s...%s failed (%s), using head only", config.app, previous_sha, sha, exc)
-    return select_merged(forge.merged_changes(config.branch), shas)
+    page = forge.merged_changes(config.branch)
+    selected = select_merged(page.changes, shas)
+    if page.page_full and page.changes and page.changes[-1] in selected:
+        # The oldest change of the page was deployed now: older ones on the next page may have been too
+        logger.warning(
+            "[%s] the whole page of recently merged changes is in this deploy; older ones won't be notified", config.app
+        )
+    return selected
 
 
 def load_state(properties: Properties, app: str) -> dict[str, Any] | None:

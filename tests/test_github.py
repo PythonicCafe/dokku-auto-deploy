@@ -57,7 +57,7 @@ def test_merged_changes_skip_closed_without_merge(github, fake_api):
         },
     ]
     fake_api.routes["GET /api/v3/repos/Org/proj/pulls"] = (200, pulls)
-    (change,) = github.merged_changes("develop")
+    (change,) = github.merged_changes("develop").changes
     assert (change.number, change.reference, change.title, change.shas) == (7, "#7", "Adds X", frozenset({"m7"}))
     assert fake_api.requests[0][2]["base"] == "develop"
 
@@ -68,7 +68,7 @@ def test_comment_posts_on_the_pull_request(github, fake_api):
         200,
         [{"number": 7, "title": "", "html_url": "u", "merged_at": "x", "merge_commit_sha": "m7"}],
     )
-    github.comment(github.merged_changes("develop")[0], "hello")
+    github.comment(github.merged_changes("develop").changes[0], "hello")
     assert fake_api.posts() == [("/api/v3/repos/Org/proj/issues/7/comments", {"body": "hello"})]
 
 
@@ -114,3 +114,30 @@ class TestRedirects:
         other_api.routes["GET /elsewhere"] = (200, {"commit": {"sha": "abc"}})
         assert github.branch_head("main") == "abc"
         assert "Authorization" not in other_api.headers[0]
+
+
+class TestPageLimits:
+    def test_truncated_compare_is_logged(self, github, fake_api, caplog):
+        commits = [{"sha": f"s{number}"} for number in range(250)]
+        fake_api.routes["GET /api/v3/repos/Org/proj/compare/aaa...bbb"] = (
+            200,
+            {"total_commits": 300, "commits": commits},
+        )
+        assert len(github.commits_between("aaa", "bbb")) == 250
+        assert "got 250 of 300 commits" in caplog.text
+
+    def test_complete_compare_is_not_logged(self, github, fake_api, caplog):
+        commits = [{"sha": "s1"}]
+        fake_api.routes["GET /api/v3/repos/Org/proj/compare/aaa...bbb"] = (
+            200,
+            {"total_commits": 1, "commits": commits},
+        )
+        github.commits_between("aaa", "bbb")
+        assert caplog.text == ""
+
+    def test_full_page_of_pull_requests_is_reported(self, github, fake_api):
+        pull = {"title": "", "html_url": "u", "merged_at": "x", "merge_commit_sha": "m"}
+        fake_api.routes["GET /api/v3/repos/Org/proj/pulls"] = (200, [pull | {"number": 1}] * 100)
+        assert github.merged_changes("develop").page_full is True
+        fake_api.routes["GET /api/v3/repos/Org/proj/pulls"] = (200, [pull | {"number": 1}] * 99)
+        assert github.merged_changes("develop").page_full is False

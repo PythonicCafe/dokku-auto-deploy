@@ -67,7 +67,7 @@ def test_merged_changes_are_identified_by_merge_squash_or_fast_forward_head_comm
             merge_request(5, sha="h5"),
         ],
     )
-    first, second, third = gitlab.merged_changes("develop")
+    first, second, third = gitlab.merged_changes("develop").changes
     assert (first.number, first.reference, first.shas) == (3, "!3", frozenset({"m3"}))
     assert second.shas == frozenset({"s4"})
     assert third.shas == frozenset({"h5"})
@@ -84,7 +84,7 @@ def test_commits_between_uses_compare(gitlab, fake_api):
 def test_comment_is_a_merge_request_note(gitlab, fake_api):
     fake_api.routes[f"GET {API}/merge_requests"] = (200, [merge_request(3, merge_commit_sha="m3")])
     fake_api.routes[f"POST {API}/merge_requests/3/notes"] = (201, {})
-    gitlab.comment(gitlab.merged_changes("develop")[0], "hello")
+    gitlab.comment(gitlab.merged_changes("develop").changes[0], "hello")
     assert fake_api.posts() == [(f"{API}/merge_requests/3/notes", {"body": "hello"})]
 
 

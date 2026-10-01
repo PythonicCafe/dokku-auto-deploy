@@ -67,7 +67,7 @@ def test_merged_changes_filter_merged_into_the_branch(forgejo, fake_api):
         200,
         [pull(1, "m1"), pull(2, "m2", merged=False), pull(3, "m3", base="main"), None],
     )
-    (change,) = forgejo.merged_changes("develop")
+    (change,) = forgejo.merged_changes("develop").changes
     assert (change.number, change.reference, change.title, change.shas) == (1, "#1", "PR 1", frozenset({"m1"}))
     assert fake_api.requests[0][2]["state"] == "closed"
 
@@ -75,7 +75,7 @@ def test_merged_changes_filter_merged_into_the_branch(forgejo, fake_api):
 def test_comment_on_the_pull_request(forgejo, fake_api):
     fake_api.routes[f"GET {API}/pulls"] = (200, [pull(1, "m1")])
     fake_api.routes[f"POST {API}/issues/1/comments"] = (201, {})
-    forgejo.comment(forgejo.merged_changes("develop")[0], "hello")
+    forgejo.comment(forgejo.merged_changes("develop").changes[0], "hello")
     assert fake_api.posts() == [(f"{API}/issues/1/comments", {"body": "hello"})]
 
 

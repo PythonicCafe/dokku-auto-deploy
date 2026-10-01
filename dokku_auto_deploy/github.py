@@ -1,10 +1,14 @@
 """GitHub REST API (github.com and GitHub Enterprise Server): the handful of calls the deploy cycle needs."""
 
+import logging
 import urllib.parse
 from typing import Any
 
-from dokku_auto_deploy.forge import Change, CIStatus, Forge
+from dokku_auto_deploy.forge import Change, CIStatus, Forge, MergedChanges
 from dokku_auto_deploy.repository import Repository
+
+logger = logging.getLogger(__name__)
+PAGE_SIZE = 100
 
 
 class GitHub(Forge):
@@ -40,18 +44,30 @@ class GitHub(Forge):
         return "success" if latest["conclusion"] == "success" else "failure"
 
     def commits_between(self, base: str, head: str) -> set[str]:
+        """Commits in `base...head`. GitHub returns at most 250 (without paging, which isn't worth it for a polling
+        interval); a longer range is logged, as pull requests merged at its start won't be found."""
         comparison = self.request("GET", f"{self.base}/compare/{base}...{head}")
-        return {commit["sha"] for commit in comparison["commits"]}
+        commits = {commit["sha"] for commit in comparison["commits"]}
+        total = comparison.get("total_commits", 0)
+        if total > len(commits):
+            logger.warning(
+                "GitHub compare %s...%s: got %d of %d commits; pull requests merged before them won't be notified",
+                base[:8],
+                head[:8],
+                len(commits),
+                total,
+            )
+        return commits
 
-    def merged_changes(self, branch: str) -> list[Change]:
+    def merged_changes(self, branch: str) -> MergedChanges:
         """Most recently updated closed PRs into `branch` (one page of 100 is enough for a polling interval).
 
         `merge_commit_sha` is the merge commit, the squashed commit or the last rebased commit, so it identifies the
         PR in the branch history whatever the merge method.
         """
-        params = {"state": "closed", "base": branch, "sort": "updated", "direction": "desc", "per_page": 100}
+        params = {"state": "closed", "base": branch, "sort": "updated", "direction": "desc", "per_page": PAGE_SIZE}
         pulls: list[dict[str, Any]] = self.request("GET", f"{self.base}/pulls", params)
-        return [
+        changes = [
             Change(
                 number=int(pull["number"]),
                 reference=f"#{pull['number']}",
@@ -62,6 +78,7 @@ class GitHub(Forge):
             for pull in pulls
             if pull.get("merged_at") and pull.get("merge_commit_sha")
         ]
+        return MergedChanges(changes, page_full=len(pulls) >= PAGE_SIZE)
 
     def comment(self, change: Change, body: str) -> None:
         self.request("POST", f"{self.base}/issues/{change.number}/comments", payload={"body": body})

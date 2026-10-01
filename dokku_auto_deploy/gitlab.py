@@ -3,9 +3,10 @@
 import urllib.parse
 from typing import Any
 
-from dokku_auto_deploy.forge import Change, CIStatus, Forge
+from dokku_auto_deploy.forge import Change, CIStatus, Forge, MergedChanges
 from dokku_auto_deploy.repository import Repository
 
+PAGE_SIZE = 100
 PENDING_STATUSES = frozenset(
     {
         "created",
@@ -61,7 +62,7 @@ class GitLab(Forge):
         comparison = self.request("GET", f"{self.base}/repository/compare", {"from": base, "to": head})
         return {commit["id"] for commit in comparison["commits"]}
 
-    def merged_changes(self, branch: str) -> list[Change]:
+    def merged_changes(self, branch: str) -> MergedChanges:
         """Most recently updated merge requests merged into `branch` (100 are enough for a polling interval).
 
         The merge request is in the branch history through its merge commit or its squash commit. Only a fast-forward
@@ -74,10 +75,10 @@ class GitLab(Forge):
             "target_branch": branch,
             "order_by": "updated_at",
             "sort": "desc",
-            "per_page": 100,
+            "per_page": PAGE_SIZE,
         }
         requests: list[dict[str, Any]] = self.request("GET", f"{self.base}/merge_requests", params)
-        return [
+        changes = [
             Change(
                 number=int(request["iid"]),
                 reference=f"!{request['iid']}",
@@ -87,6 +88,7 @@ class GitLab(Forge):
             )
             for request in requests
         ]
+        return MergedChanges(changes, page_full=len(requests) >= PAGE_SIZE)
 
     def comment(self, change: Change, body: str) -> None:
         self.request("POST", f"{self.base}/merge_requests/{change.number}/notes", payload={"body": body})

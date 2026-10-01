@@ -194,6 +194,13 @@ rebase merges, several changes merged while CI was running, and changes of a fai
 successful one. Without `deployed_sha`, or if the comparison fails (rewritten history), only the head counts.
 Redeploying the same SHA with `--redeploy` comments on nothing (no change is new) but still sends Telegram messages.
 
+Both lookups read a single page, which is plenty for the changes merged between two runs a minute apart: the compare
+(GitHub returns at most 250 commits; GitLab and Forgejo return them all) and the recently updated changes (100 on
+GitHub and GitLab, 50 on Forgejo). A longer range, like the first deploy after weeks of failed ones, may miss the oldest
+changes: they aren't notified, and the log says so (GitHub's compare reports its `total_commits`; for the list, a full
+page whose oldest change is in the range). Reading more pages would make every run slower for a case that only costs a
+missing comment.
+
 A deploy's result is saved right after `git:sync` returns, before notifying: an error while listing changes or
 notifying (e.g. a dropped connection) must not leave a finished deploy unrecorded, which would rebuild it.
 
