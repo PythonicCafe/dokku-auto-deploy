@@ -2,8 +2,11 @@
 
 from dokku_auto_deploy.forge import Forge
 from dokku_auto_deploy.github import GitHub
+from dokku_auto_deploy.gitlab import GitLab
 from dokku_auto_deploy.repository import Repository
+
+FORGE_CLASSES: dict[str, type[GitHub] | type[GitLab]] = {"github": GitHub, "gitlab": GitLab}
 
 
 def make_forge(repository: Repository, token: str) -> Forge:
-    return GitHub(repository, token)
+    return FORGE_CLASSES[repository.forge](repository, token)

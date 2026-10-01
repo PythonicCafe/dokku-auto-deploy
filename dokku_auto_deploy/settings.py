@@ -89,7 +89,12 @@ KEYS = {
         Key("repository", "app", "Repository web URL; setting it enables auto-deploy for the app", _repository),
         Key("branch", "app", "Branch to deploy", _branch),
         Key("forge", "app", f"Forge type, only needed for unknown hosts: {', '.join(FORGES)}", _forge),
-        Key("workflow", "both", "CI workflow file to wait for, or none to deploy without waiting", _workflow),
+        Key(
+            "workflow",
+            "both",
+            "CI workflow file to wait for (GitLab: any), or none to deploy without waiting",
+            _workflow,
+        ),
         Key("notify", "both", f"Comma-separated channels ({', '.join(CHANNELS)}), or none", _notify),
         Key(
             "telegram-chat", "both", "Telegram chat id, optionally with a topic: -100123 or -100123_45", _telegram_chat

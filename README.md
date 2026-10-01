@@ -1,25 +1,28 @@
 # dokku-auto-deploy
 
-A [Dokku](https://dokku.com/) plugin that deploys each app from a branch of its GitHub repository as soon as that
-commit's CI passes, without giving GitHub any credential to your server.
+A [Dokku](https://dokku.com/) plugin that deploys each app from a branch of its GitHub or GitLab repository as soon as
+that commit's CI passes, without giving the forge any credential to your server.
 
-It runs on the Dokku host itself: every minute it asks the GitHub API for the head of each app's branch, waits for
-that commit's CI to succeed and then runs `dokku git:sync --build` with that exact commit. The result can be posted as
-a comment on the pull requests that were merged and/or sent to a Telegram group.
+It runs on the Dokku host itself: every minute it asks the forge API for the head of each app's branch, waits for that
+commit's CI to succeed and then runs `dokku git:sync --build` with that exact commit. The result can be posted as a
+comment on the pull/merge requests that were merged and/or sent to a Telegram group.
+
+Supported forges: GitHub (github.com and GitHub Enterprise Server, with GitHub Actions) and GitLab (gitlab.com and
+self-managed, with GitLab CI/CD).
 
 Settings are per app, with a global fallback: the typical gitflow setup deploys `develop` to `myproject-stg` and `main`
 to `myproject-prd`, but each app picks its own repository, branch, CI workflow and notification channels.
 
 Features:
 
-- No inbound port and no secret stored on GitHub: the server pulls.
+- No inbound port and no secret stored on the forge: the server pulls.
 - Deploys only the exact commit whose CI succeeded; a newer push waits for its own CI. Apps without CI can opt out
   (`workflow none`).
 - Respects Dokku's deploy lock: never starts while another deploy (e.g. a manual `git push dokku`) runs or while the
   app is locked with `dokku apps:lock`.
 - A failed deploy is reported once and not retried in a loop; `dokku auto-deploy:poll --redeploy <app>` retries it.
-- Notifications per app: none, comments on the merged pull requests, Telegram (group or group topic, a different one
-  per app if you want), or both. On failure they include the end of the build log.
+- Notifications per app: none, comments on the merged pull/merge requests, Telegram (group or group topic, a
+  different one per app if you want), or both. On failure they include the end of the build log.
 - Only the Python standard library (3.11+), no package to install: the plugin runs its code in place.
 
 The reasons behind these choices are in [`docs/design-decisions.md`](docs/design-decisions.md).
@@ -30,15 +33,16 @@ For each app with a `repository` set, every run:
 
 1. Reads the head commit of the app's branch.
 2. If that commit was already handled, does nothing.
-3. Looks for the runs of the configured workflow file for that commit, triggered by a push to that branch. If there is
-   none yet or it is still running, waits for the next run. If it failed, records it and does nothing else. With
-   `workflow none` this step is skipped and every new commit is deployed.
+3. Looks for the CI of that commit, triggered by a push to that branch: the runs of the configured workflow file
+   (GitHub) or the push pipeline (GitLab); the latest one counts, so a successful retry wins. If there is none yet or
+   it is still running, waits for the next run. If it failed, records it and does nothing else. With `workflow none`
+   this step is skipped and every new commit is deployed.
 4. If Dokku already runs that commit (its last successful deploy, per `dokku apps:report <app>
    --app-deploy-source-metadata`), only records it: no rebuild, no notification. If the app is locked in Dokku, waits
    for the next run.
 5. Runs `dokku git:sync --build <app> <repository>.git <sha>`, streaming the build log to the run's output.
-6. Records the result and notifies the configured channels. Comments go to every pull request merged into the branch
-   since the last successful deploy of that app (several can land in one deploy); if there is none, there is no
+6. Records the result and notifies the configured channels. Comments go to every pull/merge request merged into the
+   branch since the last successful deploy of that app (several can land in one deploy); if there is none, there is no
    comment.
 
 What was handled is shown by `dokku auto-deploy:report <app>`:
@@ -46,7 +50,7 @@ What was handled is shown by `dokku auto-deploy:report <app>`:
 - `last handled`: the last branch head the plugin acted on, what happened to it (`deployed`, `deploy_failed` or
   `ci_failed`) and when. A new run only acts again when the head changes.
 - `last deployed`: the last commit deployed successfully. It differs from the handled one after a failed deploy, and
-  it bounds which merged pull requests get a comment on the next successful deploy.
+  it bounds which merged pull/merge requests get a comment on the next successful deploy.
 
 Losing that state is harmless: apps already running the branch head are only recorded, not rebuilt.
 
@@ -85,6 +89,25 @@ All commands below run on the Dokku host, as root or as a user allowed to run `d
 
 ### 1. Token
 
+The plugin reads the forge API token from the credential `dokku git:auth` stores for the repository host (in the
+dokku user's `.netrc`); Dokku uses the same credential to fetch private repositories. Give it through a pipe:
+
+```sh
+cat token-file | dokku git:auth <host> <token-username>      # e.g. github.com, gitlab.com
+rm token-file
+```
+
+The token must come through a pipe: Dokku only reads it from standard input when stdin is a pipe
+(`[[ -p /dev/stdin ]]`, checked in v0.38.28), so a `< file` redirection fails with "Missing password". Avoid passing
+it as an argument, which shows it in the process list. A token is needed even for public repositories: the plugin
+calls the API every minute and unauthenticated calls are rate-limited (60 per hour on GitHub).
+
+Dokku keeps one credential per host, so one token serves every app from that host. Comments are posted as the
+token's owner, so a bot account is better than your own: the comments don't look like yours, and the token doesn't
+depend on a person staying in the organization.
+
+#### GitHub
+
 Create a [fine-grained personal access
 token](https://docs.github.com/en/authentication/keeping-your-account-secure/managing-your-personal-access-tokens),
 preferably for a bot user of your organization:
@@ -95,26 +118,17 @@ preferably for a bot user of your organization:
   merged pull requests in notifications); `Pull requests: Read and write` if any app uses the `comment` channel.
   `Metadata: Read-only` is added automatically.
 
-Comments are posted as the user who owns the token. That is why a dedicated bot user (a regular GitHub account created
-for automation, e.g. `myorg-deploy`) is better than your own account: the comments don't look like yours, and the
-token doesn't depend on a person staying in the organization.
+The bot user is a regular GitHub account created for automation (e.g. `myorg-deploy`); `<token-username>` is its
+login. A fine-grained token covers repositories of a single owner: if this server deploys private repositories from
+different owners, use a classic token or a bot user with access to all of them.
 
-Give it to Dokku with `git:auth`. Dokku uses it to fetch private repositories, and the plugin reads the same entry
-(the `.netrc` of the dokku user) for the API:
+#### GitLab
 
-```sh
-cat token-file | dokku git:auth github.com <token-username>
-rm token-file
-```
-
-`<token-username>` is the login of the account that owns the token (e.g. the bot user). The token must come through a
-pipe: Dokku only reads it from standard input when stdin is a pipe (`[[ -p /dev/stdin ]]`, checked in v0.38.28), so a
-`< file` redirection fails with "Missing password". Avoid passing it as an argument, which shows it in the process
-list. A token is needed even for public repositories: unauthenticated API calls are limited to 60 per hour.
-
-Dokku keeps one credential per host, so one token serves every app from that host. A fine-grained token covers
-repositories of a single owner: if this server deploys private repositories from different owners, use a classic
-token or a bot user with access to all of them.
+Create a [group access token](https://docs.gitlab.com/user/group/settings/group_access_tokens/) (or a project access
+token, for a single project) with role Reporter and scopes `read_api` and `read_repository`; with the `comment`
+channel, use scope `api` instead of `read_api`, as posting a note needs it. GitLab creates a bot user for the token,
+and comments appear as that bot. Personal access tokens work too, with the same scopes. Any non-empty
+`<token-username>` works for Git over HTTPS with a token.
 
 ### 2. Apps
 
@@ -157,13 +171,16 @@ from (`(global)` when inherited) and a `problem:` line if the app's settings are
 
 | Key | Scope | Meaning |
 |---|---|---|
-| `repository` | app | Repository web URL (`https://github.com/owner/name`). Setting it enables auto-deploy for the app; unsetting it disables it |
+| `repository` | app | Repository web URL (`https://github.com/owner/name`, `https://gitlab.com/group/subgroup/project`). Setting it enables auto-deploy for the app; unsetting it disables it |
 | `branch` | app | Branch to deploy (required) |
-| `forge` | app | Forge type, only for hosts other than github.com: `github` for GitHub Enterprise Server |
-| `workflow` | app, global | Workflow file whose run must succeed, e.g. `.github/workflows/ci.yml`; `none` deploys every new commit without waiting for CI (required) |
+| `forge` | app | Forge type, only for hosts other than github.com and gitlab.com: `github` (GitHub Enterprise Server) or `gitlab` (self-managed GitLab) |
+| `workflow` | app, global | GitHub: workflow file whose run must succeed, e.g. `.github/workflows/ci.yml`. GitLab: any value but `none` waits for the push pipeline (e.g. `.gitlab-ci.yml`). `none` deploys every new commit without waiting for CI (required) |
 | `notify` | app, global | Comma-separated channels: `comment`, `telegram`, both, or `none` (default: none) |
 | `telegram-chat` | app, global | Group id (`-100...`), or group id `_` topic id (required when `notify` has `telegram`) |
 | `telegram-bot-token` | global | Telegram bot token, read from stdin |
+
+The API is found from the repository URL: `api.github.com` for github.com, `/api/v3` on other GitHub hosts, `/api/v4`
+on GitLab hosts. A GitLab installed under a path (`https://example.com/gitlab/...`) isn't supported.
 
 Settings live in Dokku's property store (`/var/lib/dokku/config/auto-deploy/`); deleting or renaming an app deletes or
 moves its settings too.
@@ -187,10 +204,11 @@ moves its settings too.
    dokku auto-deploy:notify-test myproject-stg --pull-request 12    # also comment on pull request #12
    ```
    It sends a test message to the app's chat and prints `ok telegram <chat>` or the Telegram error; with
-   `--pull-request`, it also comments on that pull request of the app's repository.
+   `--pull-request`, it also comments on that pull request (merge request on GitLab) of the app's repository.
 
-Messages are HTML: the commit link sits behind the word "commit", each pull request link spans "#number title", and the
-app URL (from `dokku url <app>`) is shown in full. Comments link the commit and show the app URL too.
+Messages are HTML: the commit link sits behind the word "commit", each pull/merge request link spans its reference and
+title ("#12 Title" on GitHub, "!12 Title" on GitLab), and the app URL (from `dokku url <app>`) is shown in full.
+Comments link the commit and show the app URL too.
 
 ### 5. First run
 
@@ -288,8 +306,8 @@ secrets.
 
 ## CI workflow
 
-For apps that wait for CI, the plugin only needs a workflow that runs on pushes to the deployed branches. With the
-gitflow described here, the workflow also runs on pull requests:
+For apps that wait for CI, the plugin only needs CI that runs on pushes to the deployed branches. With the gitflow
+described here, it also runs on pull requests. On GitHub Actions:
 
 ```yaml
 on:
@@ -298,6 +316,9 @@ on:
   pull_request:
     branches: [develop, main]
 ```
+
+On GitLab, the pipeline of a push to the branch counts (`source` `push`; merge request pipelines don't). A pipeline
+waiting for a manual job counts as still running, so the deploy waits for it.
 
 ## Command reference
 

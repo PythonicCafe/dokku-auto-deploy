@@ -33,8 +33,9 @@ class TestNormalizeUrl:
             normalize_url(value)
 
 
-def test_detect_forge_knows_github_com_only_by_host():
+def test_detect_forge_from_well_known_hosts_only():
     assert detect_forge("https://github.com/Org/proj") == "github"
+    assert detect_forge("https://gitlab.com/group/proj") == "gitlab"
     assert detect_forge("https://git.example.com/Org/proj") is None
 
 
@@ -80,3 +81,8 @@ class TestNetrc:
         path.write_text("machine github.com login bot bogus x\n")
         with pytest.raises(RepositoryError, match=r"\.netrc"):
             netrc_password(path, "github.com")
+
+
+def test_gitlab_allows_nested_groups_and_self_managed_hosts():
+    repository = Repository("https://git.example.com/group/sub/proj", "gitlab")
+    assert (repository.path, repository.api_url) == ("group/sub/proj", "https://git.example.com/api/v4")

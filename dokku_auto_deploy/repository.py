@@ -5,9 +5,9 @@ import netrc
 import urllib.parse
 from pathlib import Path
 
-FORGES = ("github",)
+FORGES = ("github", "gitlab")
 # Hosts whose forge is known; any other host needs the `forge` setting
-KNOWN_HOSTS = {"github.com": "github"}
+KNOWN_HOSTS = {"github.com": "github", "gitlab.com": "gitlab"}
 
 
 class RepositoryError(ValueError):
@@ -63,6 +63,8 @@ class Repository:
     @property
     def api_url(self) -> str:
         parts = urllib.parse.urlsplit(self.url)
+        if self.forge == "gitlab":
+            return f"{parts.scheme}://{parts.netloc}/api/v4"
         if self.host == "github.com":
             return "https://api.github.com"
         return f"{parts.scheme}://{parts.netloc}/api/v3"  # GitHub Enterprise Server

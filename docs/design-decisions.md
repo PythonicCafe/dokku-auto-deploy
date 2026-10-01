@@ -87,9 +87,30 @@ requiring a fast-forward (checked in Dokku's `plugins/git/internal-functions`, 2
 app doesn't break the next automatic deploy. Side effect: `git:sync` with a SHA never changes the app's
 `deploy-branch`, hence the README's `dokku git:set <app> deploy-branch main`.
 
-Which CI run counts: the runs of the configured workflow file (`path`) for that SHA, triggered by a push to that
-branch; the one with the highest `id` wins, so a green re-run replaces an earlier failure. `workflow none` skips
-this check entirely (repositories without CI).
+Which CI run counts is up to each forge (next section); `workflow none` skips this check entirely (repositories without
+CI).
+
+## Forges
+
+Each forge implements the same small interface (`forge.Forge`): branch head, CI status of a commit, commits between
+two SHAs, recently merged changes, comment, commit URL. The forge comes from the repository host (github.com,
+gitlab.com) or the app's `forge` setting.
+
+What "CI passed" means, per forge (the latest run counts, so a successful retry replaces a failure):
+
+- GitHub: runs of the configured workflow file (`path`) for that SHA, triggered by a push to that branch. The API
+  can't filter by file, so it is filtered after fetching.
+- GitLab: the project's pipeline for that SHA with `source=push` on that branch (one pipeline per push, defined by the
+  project's CI configuration), so `workflow` only turns the wait on or off. Statuses checked in GitLab's API docs
+  (2026-09): `success` passes; `failed`, `canceled` and `skipped` fail; everything else (`created`, `pending`,
+  `running`, `manual`, `scheduled`, ...) waits. A pipeline blocked on a manual job therefore waits until someone runs
+  it.
+
+How a merged change is recognized in the deployed range: GitHub's `merge_commit_sha` is the merge commit, the squash
+commit or the last rebased commit. GitLab has `merge_commit_sha` (null for fast-forward merges) and `squash_commit_sha`;
+when both are null (a fast-forward merge), the MR head `sha` is the commit that landed on the branch. The head `sha` is
+not used otherwise: it can reach the branch through another MR built on top of this one, and this MR would then be
+notified for a deploy that isn't its own.
 
 ## Dokku's deploy lock: wait, never unlock
 
@@ -129,15 +150,15 @@ which printed the literal string `HEAD` on that server. `poll --redeploy <app>` 
 A SHA whose deploy failed is recorded and left alone, so a broken commit isn't rebuilt every minute. Retrying is
 explicit (`poll --redeploy <app>`), which also puts an app back on its branch head after a manual deploy.
 
-## State and notified pull requests
+## State and notified changes
 
 The state (a JSON `state` property per app, written to a temp file and renamed, saved as soon as each app is handled)
 keeps two SHAs: `sha`, the last head the tool acted on whatever the outcome, and `deployed_sha`, the last successful
-deploy. The second one bounds which PRs are notified: PRs whose `merge_commit_sha` is in `deployed_sha...sha` (compare
-API). This covers merge, squash and rebase merges, several PRs merged while CI was running, and PRs of a failed deploy
-that went live with the next successful one. Without `deployed_sha`, or if the comparison fails (rewritten history),
-only the head counts. Redeploying the same SHA with `--redeploy` comments on no PR (none is new) but still sends
-Telegram messages.
+deploy. The second one bounds which changes (pull/merge requests) are notified: those with a commit in
+`deployed_sha...sha` (compare API; see "Forges" for which commits identify a change). This covers merge, squash and
+rebase merges, several changes merged while CI was running, and changes of a failed deploy that went live with the next
+successful one. Without `deployed_sha`, or if the comparison fails (rewritten history), only the head counts.
+Redeploying the same SHA with `--redeploy` comments on nothing (no change is new) but still sends Telegram messages.
 
 Notification channels are best-effort and independent: a failure is logged and never changes the deploy status or the
 other channels. Telegram is sent synchronously so failures reach the log, with a 30s timeout: answers usually take under
