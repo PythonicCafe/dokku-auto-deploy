@@ -143,3 +143,21 @@ class TestNotifyTestCommand:
     def test_without_telegram_targets_exits_3(self, tmp_path, capsys):
         assert main(["-c", str(write_config(tmp_path)), "notify-test"]) == 3
         assert "telegram" in capsys.readouterr().err
+
+
+class TestPermissionErrors:
+    def test_unreadable_config_suggests_root(self, tmp_path, monkeypatch, capsys):
+        def denied(path):
+            raise PermissionError(13, "Permission denied", str(path))
+
+        monkeypatch.setattr("dokku_auto_deploy.config.load_config", denied)
+        assert main(["-c", "/etc/dokku-auto-deploy/config.toml", "config", "show"]) == 3
+        err = capsys.readouterr().err
+        assert "/etc/dokku-auto-deploy/config.toml" in err and "root" in err and "Traceback" not in err
+
+    def test_unwritable_state_stops_before_any_deploy(self, tmp_path, monkeypatch, fake_dokku, capsys):
+        path = write_config(tmp_path)
+        monkeypatch.setattr("dokku_auto_deploy.cli.os.access", lambda target, mode: False)
+        assert main(["-c", str(path), "poll"]) == 3
+        assert fake_dokku.calls == []
+        assert "state.json" in capsys.readouterr().err

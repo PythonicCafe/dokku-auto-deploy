@@ -57,6 +57,18 @@ def create_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _require_writable(path: Path) -> None:
+    """Raise `PermissionError` unless `path` (or the closest existing parent, if it doesn't exist yet) is writable.
+
+    Checked before any deploy: failing to save the state after deploying would make the next run deploy again.
+    """
+    existing = path
+    while not existing.exists() and existing != existing.parent:
+        existing = existing.parent
+    if not os.access(existing, os.W_OK):
+        raise PermissionError(13, "Permission denied", str(path))
+
+
 def _read_secret(path: Path) -> str | None:
     try:
         return path.read_text().strip() or None
@@ -103,6 +115,7 @@ def _poll(path: Path, force_apps: list[str]) -> int:
     if unknown:
         print(f"Error: --force: unknown app(s): {', '.join(unknown)}", file=sys.stderr)
         return EXIT_CONFIG
+    _require_writable(config.settings.state_file)
     github_token = _read_secret(config.settings.github_token_file)
     if github_token is None:
         print(f"Error: GitHub token file missing or empty: {config.settings.github_token_file}", file=sys.stderr)
@@ -177,6 +190,13 @@ def main(argv: list[str] | None = None) -> int:
         return _config_show(args.config)
     except ConfigError as exc:
         print(f"Error: {exc}", file=sys.stderr)
+        return EXIT_CONFIG
+    except PermissionError as exc:
+        print(
+            f"Error: permission denied: {exc.filename}. Config, token and state files are only accessible to root "
+            f"by default: run it as root (e.g. sudo dokku-auto-deploy ...).",
+            file=sys.stderr,
+        )
         return EXIT_CONFIG
     except KeyboardInterrupt:
         print("Interrupted", file=sys.stderr)
