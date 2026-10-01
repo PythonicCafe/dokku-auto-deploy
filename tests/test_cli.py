@@ -1,28 +1,20 @@
+import argparse
+import os
+import re
+import subprocess
+import tomllib
+from pathlib import Path
+
 import pytest
 
 from dokku_auto_deploy import __version__
-from dokku_auto_deploy.cli import main
-from dokku_auto_deploy.config import CONFIG_TEMPLATE
+from dokku_auto_deploy.cli import main, parse_args, parse_change_number
+from dokku_auto_deploy.poll import load_state, poll_lock, save_state
+from dokku_auto_deploy.properties import GLOBAL, data_dir
 
-VALID = """
-[settings]
-state-file = "{state}"
-github-token-file = "{token}"
-
-[[repo]]
-repository = "Org/proj"
-workflow = ".github/workflows/ci.yml"
-stg = {{}}
-prd = {{ app = "proj-producao" }}
-"""
-
-
-def write_config(tmp_path, text=None):
-    token = tmp_path / "github-token"
-    token.write_text("GH\n")
-    path = tmp_path / "config.toml"
-    path.write_text((text or VALID).format(state=tmp_path / "state.json", token=token))
-    return path
+ROOT = Path(__file__).resolve().parent.parent
+WORKFLOW = ".github/workflows/ci.yml"
+API = "/api/v3/repos/Org/proj"
 
 
 def test_version(capsys):
@@ -32,132 +24,318 @@ def test_version(capsys):
     assert __version__ in capsys.readouterr().out
 
 
-class TestConfigCommand:
-    def test_init_writes_template_and_refuses_to_overwrite(self, tmp_path, capsys):
-        path = tmp_path / "etc" / "config.toml"
-        assert main(["-c", str(path), "config", "init"]) == 0
-        assert path.read_text() == CONFIG_TEMPLATE
-        path.write_text("# mine\n")
-        assert main(["-c", str(path), "config", "init"]) == 1
-        assert path.read_text() == "# mine\n"
-        assert main(["-c", str(path), "config", "init", "--force"]) == 0
-        assert path.read_text() == CONFIG_TEMPLATE
-
-    def test_show_lists_resolved_targets_on_stdout(self, tmp_path, capsys):
-        assert main(["-c", str(write_config(tmp_path)), "config", "show"]) == 0
-        out = capsys.readouterr().out.splitlines()
-        assert out == [
-            "Org/proj develop -> proj-stg (workflow: .github/workflows/ci.yml, notify: -)",
-            "Org/proj main -> proj-producao (workflow: .github/workflows/ci.yml, notify: -)",
-        ]
-
-    def test_show_marks_repos_without_ci(self, tmp_path, capsys):
-        path = tmp_path / "config.toml"
-        path.write_text('[[repo]]\nrepository = "Org/site"\nworkflow = ""\nprd = {}\n')
-        assert main(["-c", str(path), "config", "show"]) == 0
-        assert capsys.readouterr().out == "Org/site main -> site-prd (workflow: none, no CI wait, notify: -)\n"
-
-    def test_show_with_invalid_config_exits_3(self, tmp_path, capsys):
-        path = tmp_path / "config.toml"
-        path.write_text('[[repo]]\nrepository = "x"\n')
-        assert main(["-c", str(path), "config", "show"]) == 3
-        assert "owner/name" in capsys.readouterr().err
+def test_plugin_toml_version_matches_the_package():
+    plugin = tomllib.loads((ROOT / "plugin.toml").read_text())
+    assert plugin["plugin"]["version"] == __version__
 
 
-class TestPollCommand:
-    def test_without_repositories_exits_3(self, tmp_path, capsys):
-        path = tmp_path / "config.toml"
-        path.write_text(CONFIG_TEMPLATE)
-        assert main(["-c", str(path), "poll"]) == 3
-        assert "no repositories" in capsys.readouterr().err
+class TestParsing:
+    @pytest.mark.parametrize("value, expected", [("12", 12), ("#12", 12), ("!12", 12), (" 7 ", 7)])
+    def test_change_number(self, value, expected):
+        assert parse_change_number(value) == expected
 
-    def test_missing_github_token_exits_3(self, tmp_path, capsys):
-        path = write_config(tmp_path)
-        (tmp_path / "github-token").unlink()
-        assert main(["-c", str(path), "poll"]) == 3
-        assert "github-token" in capsys.readouterr().err
+    @pytest.mark.parametrize("value", ["", "0", "-1", "abc", "https://github.com/Org/proj/pull/1"])
+    def test_invalid_change_number(self, value):
+        with pytest.raises(argparse.ArgumentTypeError):
+            parse_change_number(value)
 
-    def test_force_unknown_app_exits_3(self, tmp_path, capsys):
-        assert main(["-c", str(write_config(tmp_path)), "poll", "--force", "nope"]) == 3
-        assert "nope" in capsys.readouterr().err
+    def test_global_is_a_positional_value(self):
+        args = parse_args(["auto-deploy:set", "--global", "workflow", "none"])
+        assert (args.target, args.key, args.value) == (GLOBAL, "workflow", "none")
+        assert parse_args(["auto-deploy:report", "--global"]).target == GLOBAL
 
-    def test_polls_every_target(self, tmp_path, fake_api, fake_dokku, monkeypatch, capsysbinary):
-        monkeypatch.setenv("DOKKU_AUTO_DEPLOY_GITHUB_API", fake_api.url)
-        for branch, sha in (("develop", "d1"), ("main", "m1")):
-            fake_api.routes[f"GET /repos/Org/proj/branches/{branch}"] = (200, {"commit": {"sha": sha}})
-        runs = [{"id": 1, "path": ".github/workflows/ci.yml", "status": "completed", "conclusion": "success"}]
-        fake_api.routes["GET /repos/Org/proj/actions/runs"] = (200, {"workflow_runs": runs})
-        fake_dokku.set(output="-----> built\n")
-        assert main(["-c", str(write_config(tmp_path)), "poll"]) == 0
-        assert fake_dokku.syncs == [
-            "git:sync --build proj-stg https://github.com/Org/proj.git d1",
-            "git:sync --build proj-producao https://github.com/Org/proj.git m1",
-        ]
-        assert capsysbinary.readouterr().out == b"-----> built\n" * 2
+    def test_help_still_works_for_positional_only_commands(self, capsys):
+        with pytest.raises(SystemExit) as exc:
+            parse_args(["auto-deploy:set", "--help"])
+        assert exc.value.code == 0
+        assert "telegram-bot-token" in capsys.readouterr().out
 
+    def test_negative_chat_id_is_a_value(self):
+        assert parse_args(["auto-deploy:set", "app", "telegram-chat", "-1001234_5"]).value == "-1001234_5"
 
-TELEGRAM_CONFIG = """
-[settings]
-state-file = "{state}"
-github-token-file = "{token}"
-telegram-token-file = "{token}"
-
-[defaults]
-workflow = ""
-telegram-chat = "-100_7"
-
-[[repo]]
-repository = "Org/a"
-notify = ["telegram"]
-stg = {{}}
-prd = {{}}
-
-[[repo]]
-repository = "Org/b"
-notify = ["telegram"]
-telegram-chat = "-200"
-prd = {{}}
-
-[[repo]]
-repository = "Org/c"
-notify = ["github"]
-prd = {{}}
-"""
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            pytest.param(["auto-deploy:bogus"], id="unknown-command"),
+            pytest.param(["auto-deploy:set", "app", "brnach", "main"], id="unknown-key"),
+            pytest.param(["auto-deploy:set", "app"], id="missing-key"),
+            pytest.param(["auto-deploy:notify-test"], id="missing-app"),
+            pytest.param(["auto-deploy:notify-test", "app", "-p", "x"], id="bad-number"),
+            pytest.param(["auto-deploy:poll", "--force", "app"], id="force-is-not-an-option"),
+        ],
+    )
+    def test_invalid_arguments_exit_2(self, argv, capsys):
+        with pytest.raises(SystemExit) as exc:
+            parse_args(argv)
+        assert exc.value.code == 2
+        assert capsys.readouterr().err.startswith("usage: dokku ")
 
 
-class TestNotifyTestCommand:
-    def test_sends_one_message_per_chat_listing_its_apps(self, tmp_path, fake_api, monkeypatch, capsys):
-        monkeypatch.setenv("DOKKU_AUTO_DEPLOY_TELEGRAM_API", fake_api.url)
-        fake_api.routes["POST /botGH/sendMessage"] = (200, {"ok": True})
-        assert main(["-c", str(write_config(tmp_path, TELEGRAM_CONFIG)), "notify-test"]) == 0
-        sent = {body["chat_id"] + "_" + body.get("message_thread_id", ""): body["text"] for _, body in fake_api.posts()}
-        assert set(sent) == {"-100_7", "-200_"}
-        assert "a-stg" in sent["-100_7"] and "a-prd" in sent["-100_7"] and "b-prd" not in sent["-100_7"]
-        assert capsys.readouterr().out.splitlines() == ["ok -100_7 (a-stg, a-prd)", "ok -200 (b-prd)"]
+class TestSet:
+    def test_sets_and_unsets(self, dokku_env, fake_dokku, capsys):
+        assert main(["auto-deploy:set", "app", "repository", "https://github.com/Org/proj.git"]) == 0
+        assert dokku_env.properties.get("app", "repository") == "https://github.com/Org/proj"
+        assert capsys.readouterr().out == "=====> Setting repository to https://github.com/Org/proj\n"
+        assert main(["auto-deploy:set", "app", "repository"]) == 0
+        assert dokku_env.properties.get("app", "repository") is None
+        assert capsys.readouterr().out == "=====> Unsetting repository\n"
 
-    def test_failed_chat_exits_1_and_says_why(self, tmp_path, fake_api, monkeypatch, capsys):
-        monkeypatch.setenv("DOKKU_AUTO_DEPLOY_TELEGRAM_API", fake_api.url)
-        assert main(["-c", str(write_config(tmp_path, TELEGRAM_CONFIG)), "notify-test"]) == 1
-        assert "Telegram API returned HTTP 404" in capsys.readouterr().err
-
-    def test_without_telegram_targets_exits_3(self, tmp_path, capsys):
-        assert main(["-c", str(write_config(tmp_path)), "notify-test"]) == 3
-        assert "telegram" in capsys.readouterr().err
-
-
-class TestPermissionErrors:
-    def test_unreadable_config_suggests_root(self, tmp_path, monkeypatch, capsys):
-        def denied(path):
-            raise PermissionError(13, "Permission denied", str(path))
-
-        monkeypatch.setattr("dokku_auto_deploy.config.load_config", denied)
-        assert main(["-c", "/etc/dokku-auto-deploy/config.toml", "config", "show"]) == 3
-        err = capsys.readouterr().err
-        assert "/etc/dokku-auto-deploy/config.toml" in err and "root" in err and "Traceback" not in err
-
-    def test_unwritable_state_stops_before_any_deploy(self, tmp_path, monkeypatch, fake_dokku, capsys):
-        path = write_config(tmp_path)
-        monkeypatch.setattr("dokku_auto_deploy.cli.os.access", lambda target, mode: False)
-        assert main(["-c", str(path), "poll"]) == 3
+    def test_global(self, dokku_env, fake_dokku):
+        assert main(["auto-deploy:set", "--global", "notify", "telegram"]) == 0
+        assert dokku_env.properties.get(GLOBAL, "notify") == "telegram"
         assert fake_dokku.calls == []
-        assert "state.json" in capsys.readouterr().err
+
+    @pytest.mark.parametrize(
+        "argv, message",
+        [
+            pytest.param(["app", "notify", "email"], "invalid notify", id="invalid-value"),
+            pytest.param([GLOBAL, "branch", "main"], "only be set per app", id="app-key-globally"),
+            pytest.param(["app", "telegram-bot-token"], "only be set with --global", id="global-key-per-app"),
+            pytest.param(["gone", "branch", "main"], "app gone does not exist", id="missing-app"),
+        ],
+    )
+    def test_rejected_without_writing(self, dokku_env, fake_dokku, capsys, argv, message):
+        fake_dokku.remove_app("gone")
+        assert main(["auto-deploy:set", *argv]) == 3
+        assert message in capsys.readouterr().err
+        assert not dokku_env.properties.root.exists()
+
+    def test_secret_as_argument_is_refused(self, dokku_env, fake_dokku, capsys):
+        assert main(["auto-deploy:set", "--global", "telegram-bot-token", "123:ABC"]) == 2
+        assert "stdin" in capsys.readouterr().err
+        assert dokku_env.properties.get(GLOBAL, "telegram-bot-token") is None
+
+
+def dokku_subcommand(command):
+    """The script Dokku 0.38 runs for `command` (`execute_dokku_cmd` in the dokku script): for a community plugin,
+    `subcommands/default` for the bare plugin name, else `subcommands/<part after the colon>`."""
+    plugin, _, name = command.partition(":")
+    assert plugin == "auto-deploy"
+    return f"subcommands/{name or 'default'}"
+
+
+def run_plugin(dokku_env, *args, stdin=None, script=None):
+    """Run a plugin script the way Dokku does (bash, as a separate process, with Dokku's environment variables); by
+    default, the subcommand script Dokku would pick for `args[0]`."""
+    script = script or dokku_subcommand(args[0])
+    fake_bin = dokku_env.home / "bin"
+    fake_bin.mkdir(exist_ok=True)
+    column = fake_bin / "column"  # Not installed everywhere; alignment doesn't matter here
+    column.write_text("#!/bin/sh\ncat\n")
+    column.chmod(0o755)
+    env = {
+        **os.environ,
+        "DOKKU_LIB_ROOT": str(dokku_env.lib_root),
+        "DOKKU_ROOT": str(dokku_env.home),
+        "DOKKU_NOT_IMPLEMENTED_EXIT": "10",
+        "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+    }
+    return subprocess.run(
+        ["bash", str(ROOT / script), *args],
+        input=stdin,
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=30,
+        check=False,
+    )
+
+
+class TestPluginScripts:
+    def test_every_command_has_the_script_dokku_looks_for(self):
+        commands = re.findall(r"^    (auto-deploy:[\w-]+)", (ROOT / "help-functions").read_text(), re.MULTILINE)
+        assert len(commands) >= 4
+        for command in [*commands, "auto-deploy", "auto-deploy:help"]:
+            script = ROOT / dokku_subcommand(command)
+            assert script.is_file() and os.access(script, os.X_OK), command
+
+    def test_secret_is_read_from_stdin_and_never_printed(self, dokku_env, fake_dokku):
+        result = run_plugin(dokku_env, "auto-deploy:set", "--global", "telegram-bot-token", stdin="123:SECRET\n")
+        assert result.returncode == 0, result.stderr
+        assert "SECRET" not in result.stdout + result.stderr
+        assert dokku_env.properties.get(GLOBAL, "telegram-bot-token") == "123:SECRET"
+
+    def test_secret_from_a_file_redirect(self, dokku_env, fake_dokku, tmp_path):
+        token_file = tmp_path / "token"
+        token_file.write_text("123:SECRET\n")
+        with token_file.open() as stdin:
+            result = subprocess.run(
+                ["bash", str(ROOT / "subcommands/set"), "auto-deploy:set", "--global", "telegram-bot-token"],
+                stdin=stdin,
+                capture_output=True,
+                text=True,
+                env={**os.environ, "DOKKU_LIB_ROOT": str(dokku_env.lib_root)},
+                timeout=30,
+                check=False,
+            )
+        assert result.returncode == 0, result.stderr
+        assert dokku_env.properties.get(GLOBAL, "telegram-bot-token") == "123:SECRET"
+
+    def test_empty_stdin_keeps_the_secret(self, dokku_env, fake_dokku):
+        dokku_env.configure(GLOBAL, telegram_bot_token="123:SECRET")
+        result = run_plugin(dokku_env, "auto-deploy:set", "--global", "telegram-bot-token", stdin="")
+        assert result.returncode == 3
+        assert "empty telegram-bot-token on stdin" in result.stderr
+        assert dokku_env.properties.get(GLOBAL, "telegram-bot-token") == "123:SECRET"
+
+    def test_invalid_secret_is_not_echoed(self, dokku_env, fake_dokku):
+        result = run_plugin(dokku_env, "auto-deploy:set", "--global", "telegram-bot-token", stdin="123:AB\nSECRET\n")
+        assert result.returncode == 3
+        assert "SECRET" not in result.stdout + result.stderr
+        assert dokku_env.properties.get(GLOBAL, "telegram-bot-token") is None
+
+    def test_current_directory_is_not_on_the_import_path(self, dokku_env, fake_dokku, tmp_path):
+        (tmp_path / "argparse.py").write_text("raise SystemExit('hijacked')\n")
+        result = subprocess.run(
+            ["bash", str(ROOT / "subcommands/report"), "auto-deploy:report", "--global"],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "DOKKU_LIB_ROOT": str(dokku_env.lib_root), "PYTHONPATH": str(tmp_path)},
+            timeout=30,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "hijacked" not in result.stderr
+
+    @pytest.mark.parametrize("command", ["auto-deploy", "auto-deploy:help"])
+    def test_help(self, dokku_env, command):
+        result = run_plugin(dokku_env, command)
+        assert result.returncode == 0
+        assert result.stdout.startswith("Usage: dokku auto-deploy[:COMMAND]")
+        for name in ("notify-test", "poll", "report", "set"):
+            assert f"auto-deploy:{name} " in result.stdout
+
+    def test_dokku_help_lists_the_plugin(self, dokku_env):
+        result = run_plugin(dokku_env, "help", script="commands")
+        assert result.returncode == 0
+        assert result.stdout.strip().startswith("auto-deploy, ")
+
+    def test_other_commands_are_not_implemented_here(self, dokku_env):
+        assert run_plugin(dokku_env, "apps:list", script="commands").returncode == 10
+
+    def test_argparse_usage_names_the_dokku_command(self, dokku_env):
+        result = run_plugin(dokku_env, "auto-deploy:poll", "--help")
+        assert result.returncode == 0
+        assert result.stdout.startswith("usage: dokku auto-deploy:poll [-h] [-r app] [-v]")
+
+
+class TestReport:
+    def configure(self, dokku_env):
+        dokku_env.configure(
+            "proj-stg", repository="https://github.com/Org/proj", branch="develop", telegram_chat="-100_9"
+        )
+        dokku_env.configure(GLOBAL, workflow=WORKFLOW, notify="telegram", telegram_bot_token="123:SECRET")
+        save_state(
+            dokku_env.properties, "proj-stg", {"sha": "c3", "status": "deployed", "at": "T", "deployed_sha": "c3"}
+        )
+
+    def test_everything(self, dokku_env, capsys):
+        self.configure(dokku_env)
+        dokku_env.configure("not-configured", branch="main")
+        assert main(["auto-deploy:report"]) == 0
+        out = capsys.readouterr().out
+        assert "SECRET" not in out
+        assert [" ".join(line.split()) for line in out.splitlines()] == [
+            "=====> auto-deploy global settings",
+            f"workflow: {WORKFLOW}",
+            "notify: telegram",
+            "telegram-chat:",
+            "telegram-bot-token: set",
+            "=====> proj-stg auto-deploy information",
+            "repository: https://github.com/Org/proj",
+            "branch: develop",
+            "forge:",
+            f"workflow: {WORKFLOW} (global)",
+            "notify: telegram (global)",
+            "telegram-chat: -100_9",
+            "last handled: c3 deployed T",
+            "last deployed: c3",
+        ]
+
+    def test_problem_is_shown(self, dokku_env, capsys):
+        self.configure(dokku_env)
+        dokku_env.properties.delete(GLOBAL, "workflow")
+        assert main(["auto-deploy:report", "proj-stg"]) == 0
+        lines = [" ".join(line.split()) for line in capsys.readouterr().out.splitlines()]
+        assert "problem: workflow is not set (dokku auto-deploy:set <app>|--global workflow" in "\n".join(lines)
+
+    def test_unconfigured_app(self, dokku_env, capsys):
+        assert main(["auto-deploy:report", "nope"]) == 3
+        assert "not configured for nope" in capsys.readouterr().err
+
+
+@pytest.fixture
+def app_env(dokku_env, fake_api, monkeypatch):
+    dokku_env.git_auth("127.0.0.1", "GH")
+    dokku_env.configure(
+        "proj-stg",
+        repository=f"{fake_api.url}/Org/proj",
+        forge="github",
+        branch="develop",
+        workflow="none",
+        notify="telegram",
+        telegram_chat="-100_9",
+    )
+    dokku_env.configure(GLOBAL, telegram_bot_token="TG")
+    monkeypatch.setenv("DOKKU_AUTO_DEPLOY_TELEGRAM_API", fake_api.url)
+    fake_api.routes["POST /botTG/sendMessage"] = (200, {"ok": True})
+    fake_api.routes[f"POST {API}/issues/5/comments"] = (201, {})
+    return dokku_env
+
+
+class TestPoll:
+    def test_deploys_and_streams_the_build_output(self, app_env, fake_api, fake_dokku, capfd):
+        fake_api.routes[f"GET {API}/branches/develop"] = (200, {"commit": {"sha": "c3"}})
+        fake_dokku.set(output="-----> Building\n")
+        assert main(["auto-deploy:poll"]) == 0
+        assert capfd.readouterr().out == "-----> Building\n"
+        assert load_state(app_env.properties, "proj-stg")["deployed_sha"] == "c3"
+
+    def test_error_in_an_app_exits_1(self, app_env, fake_api, fake_dokku):
+        assert main(["auto-deploy:poll"]) == 1
+
+    def test_redeploy_while_another_poll_runs_is_an_error(self, app_env, fake_api, capsys):
+        with poll_lock(data_dir() / "poll.lock"):
+            assert main(["auto-deploy:poll", "--redeploy", "proj-stg"]) == 1
+        assert "another auto-deploy:poll is running; run the redeploy again" in capsys.readouterr().err
+        assert fake_api.requests == []
+
+    def test_redeploy_of_unconfigured_app(self, app_env, capsys):
+        assert main(["auto-deploy:poll", "--redeploy", "nope"]) == 3
+        assert "not configured for: nope" in capsys.readouterr().err
+
+    def test_running_poll_makes_the_next_one_skip(self, app_env, fake_api, capsys):
+        with poll_lock(data_dir() / "poll.lock"):
+            assert main(["auto-deploy:poll"]) == 0
+        assert fake_api.requests == []
+        assert "INFO another auto-deploy:poll is running, skipping this run" in capsys.readouterr().err
+
+
+class TestNotifyTest:
+    def test_telegram(self, app_env, fake_api, capsys):
+        assert main(["auto-deploy:notify-test", "proj-stg"]) == 0
+        assert capsys.readouterr().out == "ok telegram -100_9\n"
+        ((path, fields),) = fake_api.posts()
+        assert (path, fields["chat_id"], fields["message_thread_id"]) == ("/botTG/sendMessage", "-100", "9")
+        assert "proj-stg" in fields["text"]
+
+    def test_comment(self, app_env, fake_api, capsys):
+        assert main(["auto-deploy:notify-test", "proj-stg", "-p", "#5"]) == 0
+        assert f"ok comment {fake_api.url}/Org/proj 5" in capsys.readouterr().out
+        assert [path for path, _ in fake_api.posts()] == ["/botTG/sendMessage", f"{API}/issues/5/comments"]
+
+    def test_failure_exits_1(self, app_env, fake_api, capsys):
+        fake_api.routes["POST /botTG/sendMessage"] = (400, {"ok": False, "description": "chat not found"})
+        assert main(["auto-deploy:notify-test", "proj-stg"]) == 1
+        assert "chat not found" in capsys.readouterr().err
+
+    def test_nothing_to_test(self, app_env, capsys):
+        app_env.configure("proj-stg", notify="comment")
+        assert main(["auto-deploy:notify-test", "proj-stg"]) == 3
+        assert "--pull-request" in capsys.readouterr().err
+
+    def test_invalid_settings_exit_3(self, app_env, capsys):
+        app_env.properties.delete("proj-stg", "telegram-chat")
+        assert main(["auto-deploy:notify-test", "proj-stg"]) == 3
+        assert "telegram-chat is not set" in capsys.readouterr().err

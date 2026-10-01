@@ -1,35 +1,43 @@
-"""One polling cycle: for each target, deploy the branch head once its CI passed, then report the result.
+"""One polling cycle: for each configured app, deploy its branch head once CI passed, then report the result.
 
-Decision per target (see `decide`):
+Decision per app (see `decide`):
 - head SHA already handled (deployed, CI failed or deploy failed) -> skip. A failed deploy is not retried on its own,
-  to avoid rebuilding a broken commit every cycle; `force_apps` retries it.
+  to avoid rebuilding a broken commit every cycle; `redeploy` retries it.
 - CI of that SHA (push event on that branch, configured workflow) not finished -> wait for the next cycle.
-  With an empty workflow there is no CI to wait for.
+  With `workflow none` there is no CI to wait for.
 - CI failed -> recorded, nothing deployed, nobody notified (the forge already shows the red CI).
 - CI passed -> `dokku git:sync --build` of that exact SHA, unless the app is locked (manual deploy or `apps:lock`),
-  or Dokku already runs it (its last successful deploy): then it is only recorded, so a first run or a lost state file doesn't rebuild
-  apps that are up to date. `force_apps` rebuilds anyway.
+  or Dokku already runs it (its last successful deploy): then it is only recorded, so a first run or a lost state doesn't rebuild
+  apps that are up to date. `redeploy` rebuilds anyway.
 """
 
 import datetime
+import fcntl
 import json
 import logging
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Literal
 
 from dokku_auto_deploy import dokku
-from dokku_auto_deploy.config import Config, Target
 from dokku_auto_deploy.forge import Change, CIStatus, Forge, ForgeError
-from dokku_auto_deploy.github import DEFAULT_API as GITHUB_API
-from dokku_auto_deploy.github import GitHub
+from dokku_auto_deploy.forges import make_forge
 from dokku_auto_deploy.notify import DeployResult, notify
+from dokku_auto_deploy.properties import GLOBAL, Properties, dokku_root
+from dokku_auto_deploy.repository import RepositoryError, netrc_password
+from dokku_auto_deploy.settings import AppConfig, ConfigError, configured_apps, load_app
 from dokku_auto_deploy.telegram import DEFAULT_API as TELEGRAM_API
 
 logger = logging.getLogger(__name__)
 
 Action = Literal["skip", "wait", "ci_failed", "deploy"]
 OutputCallback = Callable[[bytes], object]
+STATE_KEY = "state"
+
+
+class PollRunning(RuntimeError):
+    pass
 
 
 def decide(head_sha: str, state: dict[str, Any] | None, ci: CIStatus | None) -> Action:
@@ -46,8 +54,8 @@ def select_merged(changes: list[Change], shas: set[str]) -> list[Change]:
     return [change for change in changes if change.shas & shas]
 
 
-def merged_changes(forge: Forge, target: Target, previous_sha: str | None, sha: str) -> list[Change]:
-    """Changes merged into the target branch after `previous_sha` up to `sha`.
+def merged_changes(forge: Forge, config: AppConfig, previous_sha: str | None, sha: str) -> list[Change]:
+    """Changes merged into the app's branch after `previous_sha` up to `sha`.
 
     Several can land in one deploy (merged while CI was running), so the whole range counts. Without a previous
     deploy, or when the range can't be compared (history rewritten), only `sha` itself is considered.
@@ -57,41 +65,62 @@ def merged_changes(forge: Forge, target: Target, previous_sha: str | None, sha: 
         try:
             shas |= forge.commits_between(previous_sha, sha)
         except ForgeError as exc:
-            logger.warning("[%s] compare %s...%s failed (%s), using head only", target.app, previous_sha, sha, exc)
-    return select_merged(forge.merged_changes(target.branch), shas)
+            logger.warning("[%s] compare %s...%s failed (%s), using head only", config.app, previous_sha, sha, exc)
+    return select_merged(forge.merged_changes(config.branch), shas)
 
 
-def load_state(path: Path) -> dict[str, dict[str, Any]]:
-    if not path.exists():
-        return {}
-    state: dict[str, dict[str, Any]] = json.loads(path.read_text())
+def load_state(properties: Properties, app: str) -> dict[str, Any] | None:
+    """The app's state, or None if there is none or it can't be read: starting over is safe, since apps already
+    running the branch head are only recorded, not rebuilt."""
+    value = properties.get(app, STATE_KEY)
+    if value is None:
+        return None
+    try:
+        state = json.loads(value)
+    except ValueError:
+        state = None
+    if not isinstance(state, dict):
+        logger.warning("[%s] unreadable state, starting over: %r", app, value[:200])
+        return None
     return state
 
 
-def save_state(path: Path, state: dict[str, dict[str, Any]]) -> None:
-    """Write atomically (temp file + rename): a crash mid-write must not lose what was already deployed."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_suffix(path.suffix + ".tmp")
-    temp.write_text(json.dumps(state, indent=2, default=str) + "\n")
-    temp.replace(path)
+def save_state(properties: Properties, app: str, state: dict[str, Any]) -> None:
+    properties.set(app, STATE_KEY, json.dumps(state, default=str) + "\n")
 
 
-def process_target(
-    target: Target,
-    state: dict[str, dict[str, Any]],
+def forge_for(config: AppConfig) -> Forge:
+    """Forge client authenticated with the token `dokku git:auth <host>` stored for the repository host."""
+    netrc_path = dokku_root() / ".netrc"
+    try:
+        token = netrc_password(netrc_path, config.repository.host)
+    except RepositoryError as exc:
+        raise ConfigError(str(exc)) from None
+    if token is None:
+        raise ConfigError(
+            f"no token for {config.repository.host} in {netrc_path} "
+            f"(cat token-file | dokku git:auth {config.repository.host} <username>)"
+        )
+    return make_forge(config.repository, token)
+
+
+def process_app(
+    config: AppConfig,
     forge: Forge,
+    properties: Properties,
     telegram_token: str | None,
     telegram_api: str,
-    force: bool,
+    redeploy: bool,
     on_output: OutputCallback | None,
 ) -> None:
-    app, branch = target.app, target.branch
+    app, branch = config.app, config.branch
     sha = forge.branch_head(branch)
-    last_deployed = state.get(app, {}).get("deployed_sha")
-    current = None if force else state.get(app)
+    previous = load_state(properties, app)
+    last_deployed = (previous or {}).get("deployed_sha")
+    current = None if redeploy else previous
     ci = None
-    if target.workflow and (current is None or current.get("sha") != sha):
-        ci = forge.ci_status(sha, branch, target.workflow)
+    if config.workflow and (current is None or current.get("sha") != sha):
+        ci = forge.ci_status(sha, branch, config.workflow)
     action = decide(sha, current, ci)
     if action == "skip":
         return
@@ -101,7 +130,7 @@ def process_target(
     if action == "ci_failed":
         logger.info("[%s] %s@%s: CI failed, not deploying", app, branch, sha[:8])
         status = "ci_failed"
-    elif not force and dokku.runs_commit(app, sha):
+    elif not redeploy and dokku.runs_commit(app, sha):
         logger.info("[%s] %s@%s: app already runs this commit, recorded without rebuilding", app, branch, sha[:8])
         status = "deployed"
         last_deployed = sha
@@ -110,56 +139,66 @@ def process_target(
             logger.info("[%s] %s@%s: app locked (deploy in progress or apps:lock), waiting", app, branch, sha[:8])
             return
         logger.info("[%s] deploying %s@%s", app, branch, sha[:8])
-        success, output = dokku.git_sync(app, target.repository, sha, on_output)
+        success, output = dokku.git_sync(app, config.repository.clone_url, sha, on_output)
         if not success and dokku.is_locked(app):
             logger.info("[%s] app got locked during our deploy attempt, will retry", app)
             return
         status = "deployed" if success else "deploy_failed"
         logger.info("[%s] %s: %s", app, sha[:8], status)
-        if target.notify:
+        if config.notify:
             changes: list[Change] = []
             if sha != last_deployed:
                 try:
-                    changes = merged_changes(forge, target, last_deployed, sha)
+                    changes = merged_changes(forge, config, last_deployed, sha)
                 except (ForgeError, KeyError, ValueError) as exc:
                     logger.warning("[%s] could not list merged changes: %s", app, exc)
-            result = DeployResult(target, sha, success, output, changes, forge.commit_url(sha), dokku.app_url(app))
+            result = DeployResult(config, sha, success, output, changes, forge.commit_url(sha), dokku.app_url(app))
             for failure in notify(result, forge, telegram_token, telegram_api):
                 logger.warning("[%s] notification failed: %s", app, failure)
         if success:
             last_deployed = sha
-    state[app] = {
+    state = {
         "sha": sha,
         "status": status,
         "at": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
         "deployed_sha": last_deployed,
     }
+    save_state(properties, app, state)
+
+
+@contextmanager
+def poll_lock(path: Path) -> Iterator[None]:
+    """Only one cycle at a time (a scheduled one and a manual `poll` may overlap); raises `PollRunning` otherwise."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a") as lock_file:
+        try:
+            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise PollRunning("another auto-deploy:poll is running") from None
+        yield
 
 
 def poll(
-    config: Config,
-    github_token: str,
-    telegram_token: str | None,
-    force_apps: Iterable[str] = (),
-    github_api: str = GITHUB_API,
+    properties: Properties,
+    redeploy: Iterable[str] = (),
     telegram_api: str = TELEGRAM_API,
     on_output: OutputCallback | None = None,
 ) -> int:
-    """Run one cycle over every target; returns how many targets failed (API errors, dokku not found etc.).
+    """Run one cycle over every configured app; returns how many apps failed (invalid config, API errors etc.).
 
-    Targets are independent: an error in one is logged and the others still run. State is saved after each target so
-    an interruption keeps what was already done.
+    Apps are independent: an error in one is logged and the others still run. Each app's state is saved as soon as
+    it is handled, so an interruption keeps what was already done.
     """
-    forced = set(force_apps)
-    state = load_state(config.settings.state_file)
+    redeploy_apps = set(redeploy)
+    telegram_token = properties.get(GLOBAL, "telegram-bot-token")
     errors = 0
-    for target in config.targets:
+    for app in configured_apps(properties):
         try:
-            forge = GitHub(target.repository, github_token, github_api)
-            process_target(target, state, forge, telegram_token, telegram_api, target.app in forced, on_output)
+            config = load_app(properties, app)
+            process_app(
+                config, forge_for(config), properties, telegram_token, telegram_api, app in redeploy_apps, on_output
+            )
         except Exception as exc:
             errors += 1
-            logger.error("[%s] %s", target.app, exc)
-        finally:
-            save_state(config.settings.state_file, state)
+            logger.error("[%s] %s", app, exc)
     return errors

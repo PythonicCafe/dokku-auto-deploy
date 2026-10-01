@@ -1,9 +1,0 @@
-[Unit]
-Description=Deploy Dokku apps whose GitHub CI passed (dokku-auto-deploy)
-Wants=network-online.target
-After=network-online.target docker.service
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/dokku-auto-deploy poll
-TimeoutStartSec=2h

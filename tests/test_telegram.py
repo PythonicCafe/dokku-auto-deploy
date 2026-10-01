@@ -8,6 +8,7 @@ from dokku_auto_deploy.telegram import Telegram, TelegramError, parse_chat
     [
         pytest.param("-1003508368629_2909", ("-1003508368629", "2909"), id="group-topic"),
         pytest.param("-1003508368629", ("-1003508368629", None), id="group"),
+        pytest.param("@deploy_logs", ("@deploy_logs", None), id="channel-username-with-underscore"),
     ],
 )
 def test_parse_chat(chat, expected):

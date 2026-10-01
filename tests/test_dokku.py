@@ -2,7 +2,7 @@ import sys
 
 import pytest
 
-from dokku_auto_deploy.dokku import app_url, git_sync, is_locked, run_streaming, runs_commit
+from dokku_auto_deploy.dokku import app_exists, app_url, git_sync, is_locked, run_streaming, runs_commit
 
 
 def test_run_streaming_returns_output_and_code_while_streaming():
@@ -27,7 +27,7 @@ def test_is_locked(fake_dokku):
 
 def test_git_sync_uses_exact_sha(fake_dokku):
     fake_dokku.set(exit_code=0, output="ok\n")
-    assert git_sync("app", "Org/proj", "abc") == (True, "ok\n")
+    assert git_sync("app", "https://github.com/Org/proj.git", "abc") == (True, "ok\n")
     assert fake_dokku.syncs == ["git:sync --build app https://github.com/Org/proj.git abc"]
 
 
@@ -56,3 +56,9 @@ def test_app_url_is_the_first_url(fake_dokku):
 def test_app_url_is_none_without_domains(fake_dokku):
     fake_dokku.set(url="")
     assert app_url("app") is None
+
+
+def test_app_exists(fake_dokku):
+    fake_dokku.remove_app("gone")
+    assert app_exists("app") is True
+    assert app_exists("gone") is False

@@ -1,4 +1,4 @@
-"""Run `python -m dokku_auto_deploy` with the same entry point as the `dokku-auto-deploy` console script."""
+"""`python3 -m dokku_auto_deploy auto-deploy:<command> ...` runs a command without Dokku (development)."""
 
 import sys
 

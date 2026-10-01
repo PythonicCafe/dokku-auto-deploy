@@ -1,6 +1,7 @@
 """Minimal Telegram Bot API client (stdlib only): sending a message to a group or to a topic of a group."""
 
 import json
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -16,9 +17,12 @@ class TelegramError(RuntimeError):
 
 
 def parse_chat(chat: str) -> tuple[str, str | None]:
-    """`-100123_45` -> ("-100123", "45") for a topic in a group; `-100123` -> ("-100123", None)."""
-    chat_id, _, thread_id = chat.partition("_")
-    return chat_id, thread_id or None
+    """`-100123_45` -> ("-100123", "45") for a topic in a group; `-100123` -> ("-100123", None). A channel username
+    (`@my_channel`) can have `_` too and has no topics."""
+    match = re.fullmatch(r"(-?\d+)_(\d+)", chat)
+    if match:
+        return match[1], match[2]
+    return chat, None
 
 
 class Telegram:

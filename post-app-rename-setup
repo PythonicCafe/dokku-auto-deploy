@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -eo pipefail
+[[ $DOKKU_TRACE ]] && set -x
+source "$PLUGIN_CORE_AVAILABLE_PATH/common/property-functions"
+
+trigger-auto-deploy-post-app-rename-setup() {
+  declare desc="moves settings and state to the new app name"
+  declare trigger="post-app-rename-setup"
+  declare OLD_APP="$1" NEW_APP="$2"
+
+  fn-plugin-property-clone "auto-deploy" "$OLD_APP" "$NEW_APP"
+  fn-plugin-property-destroy "auto-deploy" "$OLD_APP"
+}
+
+trigger-auto-deploy-post-app-rename-setup "$@"

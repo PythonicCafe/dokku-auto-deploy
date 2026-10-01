@@ -11,9 +11,11 @@ from typing import Any
 
 import pytest
 
+from dokku_auto_deploy.properties import Properties
+
 
 class FakeAPI:
-    """In-process HTTP server standing in for both GitHub and Telegram APIs.
+    """In-process HTTP server standing in for the forge APIs and Telegram.
 
     `routes` maps "METHOD /path" (no query string) to a (status, JSON body) pair; every request is recorded in
     `requests` as (method, path, query, body) so tests can assert on what was sent. `response_delay` (seconds) makes
@@ -23,6 +25,7 @@ class FakeAPI:
     def __init__(self) -> None:
         self.routes: dict[str, tuple[int, Any]] = {}
         self.requests: list[tuple[str, str, dict[str, str], Any]] = []
+        self.headers: list[dict[str, str]] = []
         self.response_delay = 0.0
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
@@ -43,6 +46,7 @@ class FakeAPI:
                 else:
                     body = dict(urllib.parse.parse_qsl(raw.decode()))
                 api.requests.append((method, parsed.path, query, body))
+                api.headers.append(dict(self.headers))
                 time.sleep(api.response_delay)
                 status, payload = api.routes.get(f"{method} {parsed.path}", (404, {"message": "Not Found"}))
                 data = json.dumps(payload).encode()
@@ -77,6 +81,7 @@ def fake_api() -> Iterator[FakeAPI]:
 FAKE_DOKKU = """#!/bin/sh
 echo "$@" >> "$FAKE_DOKKU_DIR/calls"
 case "$1" in
+  apps:exists) [ -f "$FAKE_DOKKU_DIR/missing-$2" ] && exit 20 || exit 0 ;;
   apps:locked) [ -f "$FAKE_DOKKU_DIR/locked" ] && exit 0 || exit 1 ;;
   apps:report) cat "$FAKE_DOKKU_DIR/deploy-source" 2>/dev/null; echo; exit 0 ;;
   url) cat "$FAKE_DOKKU_DIR/url" 2>/dev/null; exit 0 ;;
@@ -113,6 +118,9 @@ class FakeDokku:
             else:
                 path.unlink(missing_ok=True)
 
+    def remove_app(self, app: str) -> None:
+        (self.directory / f"missing-{app}").touch()
+
     @property
     def calls(self) -> list[str]:
         path = self.directory / "calls"
@@ -135,3 +143,30 @@ def fake_dokku(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeDokku:
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.setenv("FAKE_DOKKU_DIR", str(state_dir))
     return FakeDokku(state_dir)
+
+
+class DokkuEnv:
+    """Dokku's directories for the plugin: properties under `lib_root`, `.netrc` under `home` (the dokku user's)."""
+
+    def __init__(self, tmp_path: Path) -> None:
+        self.lib_root = tmp_path / "var-lib-dokku"
+        self.home = tmp_path / "home-dokku"
+        self.home.mkdir()
+        self.properties = Properties(self.lib_root / "config" / "auto-deploy")
+
+    def git_auth(self, host: str, password: str, login: str = "bot") -> None:
+        with (self.home / ".netrc").open("a") as netrc:
+            netrc.write(f"machine {host}\nlogin {login}\npassword {password}\n")
+
+    def configure(self, app: str, **settings: str) -> None:
+        """`configure("app", telegram_chat="-1")` is `dokku auto-deploy:set app telegram-chat -1` for each key."""
+        for key, value in settings.items():
+            self.properties.set(app, key.replace("_", "-"), value)
+
+
+@pytest.fixture
+def dokku_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> DokkuEnv:
+    env = DokkuEnv(tmp_path)
+    monkeypatch.setenv("DOKKU_LIB_ROOT", str(env.lib_root))
+    monkeypatch.setenv("DOKKU_ROOT", str(env.home))
+    return env

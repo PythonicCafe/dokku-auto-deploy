@@ -1,10 +1,11 @@
 PYTHON = python3
+SHELL_SCRIPTS = commands help-functions internal-functions install update uninstall post-delete post-app-rename-setup subcommands/default
 
 help:					# List all make commands
 	@awk -F ':.*#' '/^[a-zA-Z_-]+:.*?#/ { printf "\033[36m%-15s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST) | sort
 
-dev-install:				# Install dev dependencies (pytest, mypy, ruff, build, twine)
-	$(PYTHON) -m pip install --user --group dev -e .
+dev-install:				# Install dev dependencies (pytest, mypy, ruff, shellcheck)
+	$(PYTHON) -m pip install --user --group dev
 
 test:					# Execute pytest
 	$(PYTHON) -m pytest tests/ -v --tb=short
@@ -22,42 +23,18 @@ lint:					# Run ruff (check --fix + format)
 	$(PYTHON) -m ruff check . --fix
 	$(PYTHON) -m ruff format --line-length 120 .
 
-lint-check:				# Run ruff without changing files
+lint-check:				# Run ruff without changing files, and shellcheck on the plugin scripts
 	$(PYTHON) -m ruff check .
 	$(PYTHON) -m ruff format --line-length 120 --check .
+	shellcheck $(SHELL_SCRIPTS)
 
 check: lint-check mypy test		# Run everything (lint-check, mypy, test)
 
-build:					# Build sdist and wheel into clean build and dist directories
-	rm -rf build/ dist/
-	$(PYTHON) -m build
-
-smoke-wheel: build			# Install wheel without dependencies and smoke-test its CLI
-	@tmp_dir=$$(mktemp -d); \
-	trap 'rm -rf "$$tmp_dir"' EXIT; \
-	$(PYTHON) -m venv "$$tmp_dir/venv"; \
-	"$$tmp_dir/venv/bin/python" -m pip install --no-deps dist/*.whl; \
-	"$$tmp_dir/venv/bin/dokku-auto-deploy" --version; \
-	"$$tmp_dir/venv/bin/dokku-auto-deploy" -c "$$tmp_dir/config.toml" config init; \
-	"$$tmp_dir/venv/bin/dokku-auto-deploy" -c "$$tmp_dir/config.toml" config show
-
-smoke-sdist: build			# Run the test suite from the published sdist (needs tests/ + conftest.py in it)
-	@tmp_dir=$$(mktemp -d); \
-	trap 'rm -rf "$$tmp_dir"' EXIT; \
-	tar xzf dist/*.tar.gz -C "$$tmp_dir"; \
-	cd "$$tmp_dir"/dokku_auto_deploy-*/ && $(PYTHON) -m pytest tests/ -q --tb=short
-
-build-check: smoke-wheel smoke-sdist	# Build, smoke-test (wheel CLI + sdist suite), and validate with twine
-	$(PYTHON) -m twine check dist/*
-
-publish: build-check			# Upload packages to PyPI (requires credentials)
-	$(PYTHON) -m twine upload dist/*
-
-clean:					# Remove build artifacts and caches
-	rm -rf dist/ build/ *.egg-info .pytest_cache .ruff_cache .mypy_cache
+clean:					# Remove caches
+	rm -rf .pytest_cache .ruff_cache .mypy_cache
 	find . -type d -name __pycache__ -exec rm -rf {} +
 
 tags:					# Generate tags file for the entire project (requires universal-ctags)
 	@git ls-files | ctags -L - --tag-relative=yes --quiet --append -f ".tags"
 
-.PHONY: help dev-install test test-coverage test-fast mypy lint lint-check check build smoke-wheel smoke-sdist build-check publish clean tags
+.PHONY: help dev-install test test-coverage test-fast mypy lint lint-check check clean tags

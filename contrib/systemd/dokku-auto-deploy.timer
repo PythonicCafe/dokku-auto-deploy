@@ -1,9 +1,0 @@
-[Unit]
-Description=Run dokku-auto-deploy every minute after the previous run finishes
-
-[Timer]
-OnBootSec=2min
-OnUnitInactiveSec=1min
-
-[Install]
-WantedBy=timers.target

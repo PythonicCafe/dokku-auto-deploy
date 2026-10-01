@@ -1,4 +1,4 @@
-"""Calls to the local `dokku` CLI. Runs on the Dokku host itself, so no SSH key is involved."""
+"""Calls to the local `dokku` CLI (the plugin runs as the dokku user on the Dokku host: no SSH key is involved)."""
 
 import signal
 import subprocess
@@ -37,6 +37,11 @@ def run_streaming(
     return returncode, output
 
 
+def app_exists(app: str) -> bool:
+    result = subprocess.run(["dokku", "apps:exists", app], capture_output=True, check=False, timeout=LOCK_CHECK_TIMEOUT)
+    return result.returncode == 0
+
+
 def is_locked(app: str) -> bool:
     """True while Dokku holds the app's deploy lock: a deploy in progress (from anyone) or a manual `apps:lock`."""
     result = subprocess.run(["dokku", "apps:locked", app], capture_output=True, check=False, timeout=LOCK_CHECK_TIMEOUT)
@@ -72,13 +77,13 @@ def app_url(app: str) -> str | None:
 
 
 def git_sync(
-    app: str, repository: str, sha: str, on_output: Callable[[bytes], object] | None = None
+    app: str, clone_url: str, sha: str, on_output: Callable[[bytes], object] | None = None
 ) -> tuple[bool, str]:
-    """Fetch the exact `sha` from GitHub into the app repo and build it (`git:sync --build`); returns (ok, output).
+    """Fetch the exact `sha` from `clone_url` into the app repo and build it (`git:sync --build`); returns (ok, output).
 
     With an explicit SHA, `git:sync` moves the deploy branch with `update-ref`, so it works even after someone
     force-pushed another history to the app by hand.
     """
-    command = ["dokku", "git:sync", "--build", app, f"https://github.com/{repository}.git", sha]
+    command = ["dokku", "git:sync", "--build", app, clone_url, sha]
     returncode, output = run_streaming(command, DEPLOY_TIMEOUT, on_output)
     return returncode == 0, output

@@ -5,10 +5,9 @@ import html
 import logging
 import re
 import socket
-from collections.abc import Iterable
 
-from dokku_auto_deploy.config import Target
 from dokku_auto_deploy.forge import Change, Forge, ForgeError
+from dokku_auto_deploy.settings import AppConfig
 from dokku_auto_deploy.telegram import DEFAULT_API as TELEGRAM_API
 from dokku_auto_deploy.telegram import Telegram
 
@@ -20,7 +19,7 @@ ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 @dataclasses.dataclass
 class DeployResult:
-    target: Target
+    target: AppConfig
     sha: str
     success: bool
     output: str
@@ -45,8 +44,7 @@ def comment_body(result: DeployResult) -> str:
     return (
         f"Deploy of {commit} to `{app}` **failed**.{app_line}\n\nEnd of the build log:\n\n"
         f"```\n{error_tail(result.output)}\n```\n\n"
-        f"Full log on the server: `journalctl -u dokku-auto-deploy`. "
-        f"To retry: `dokku-auto-deploy poll --force {app}`."
+        f"To retry: `dokku auto-deploy:poll --redeploy {app}`."
     )
 
 
@@ -60,7 +58,7 @@ def telegram_text(result: DeployResult) -> str:
     status = "succeeded" if result.success else "FAILED"
     lines = [
         f"Deploy {status}: <b>{html.escape(target.app)}</b>",
-        f'{html.escape(target.repository)} {html.escape(target.branch)}, <a href="{html.escape(result.commit_url)}">'
+        f'{html.escape(target.repository.path)} {html.escape(target.branch)}, <a href="{html.escape(result.commit_url)}">'
         f"commit</a> <code>{sha[:8]}</code>",
     ]
     if result.app_url:
@@ -96,7 +94,7 @@ def notify(
     failures = []
     for channel in result.target.notify:
         try:
-            if channel == "github":
+            if channel == "comment":
                 if not result.changes:
                     logger.info("[%s] %s: no merged change in this deploy, nothing to comment", app, forge.name)
                 for change in result.changes:
@@ -104,7 +102,10 @@ def notify(
                     logger.info("[%s] %s: commented on %s", app, forge.name, change.reference)
             elif channel == "telegram":
                 if not telegram_token:
-                    raise RuntimeError("no Telegram bot token (see telegram-token-file in [settings])")
+                    raise RuntimeError(
+                        "no Telegram bot token (cat token-file | dokku auto-deploy:set --global telegram-bot-token)"
+                    )
+                assert result.target.telegram_chat is not None  # Checked by `load_app`
                 telegram = Telegram(telegram_token, telegram_api)
                 telegram.send_message(result.target.telegram_chat, telegram_text(result))
                 logger.info("[%s] Telegram: message sent to %s", app, result.target.telegram_chat)
@@ -113,28 +114,19 @@ def notify(
     return failures
 
 
-def telegram_chats(targets: Iterable[Target]) -> dict[str, list[str]]:
-    """Apps reported to each Telegram chat, in config order (only targets with the telegram channel)."""
-    chats: dict[str, list[str]] = {}
-    for target in targets:
-        if "telegram" in target.notify:
-            chats.setdefault(target.telegram_chat, []).append(target.app)
-    return chats
-
-
-def send_test_messages(
-    targets: Iterable[Target], telegram_token: str, telegram_api: str = TELEGRAM_API
-) -> list[tuple[str, list[str], str | None]]:
-    """Send one test message to each configured Telegram chat; returns (chat, apps, error or None) per chat."""
-    telegram = Telegram(telegram_token, telegram_api)
+def send_test_message(config: AppConfig, telegram_token: str, telegram_api: str = TELEGRAM_API) -> None:
+    """Send a test message to the app's Telegram chat; errors raise `TelegramError`."""
+    assert config.telegram_chat is not None
     host = html.escape(socket.gethostname())
-    results: list[tuple[str, list[str], str | None]] = []
-    for chat, apps in telegram_chats(targets).items():
-        names = ", ".join(f"<code>{html.escape(app)}</code>" for app in apps)
-        text = f"dokku-auto-deploy test from <b>{host}</b>: deploys of {names} will be reported here."
-        try:
-            telegram.send_message(chat, text)
-            results.append((chat, apps, None))
-        except (RuntimeError, OSError) as exc:
-            results.append((chat, apps, str(exc)))
-    return results
+    text = f"dokku auto-deploy test from <b>{host}</b>: deploys of <code>{html.escape(config.app)}</code> will be reported here."
+    Telegram(telegram_token, telegram_api).send_message(config.telegram_chat, text)
+
+
+def send_test_comment(config: AppConfig, forge: Forge, number: int) -> None:
+    """Comment on change `number` of the app's repository; errors raise `ForgeError`."""
+    if "comment" in config.notify:
+        scope = f"Deploys of `{config.app}` will be reported on the changes merged into `{config.branch}`."
+    else:
+        scope = f"`{config.app}` doesn't have `comment` in `notify`, so its deploys won't be commented on."
+    body = f"Test comment from dokku auto-deploy on `{socket.gethostname()}`. {scope}"
+    forge.comment(Change(number, f"#{number}", "", "", frozenset()), body)

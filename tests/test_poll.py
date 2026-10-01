@@ -1,10 +1,8 @@
-import json
-
 import pytest
 
-from dokku_auto_deploy.config import parse_config
 from dokku_auto_deploy.forge import Change
-from dokku_auto_deploy.poll import decide, poll, select_merged
+from dokku_auto_deploy.poll import decide, load_state, poll, save_state, select_merged
+from dokku_auto_deploy.properties import GLOBAL
 
 WORKFLOW = ".github/workflows/ci.yml"
 
@@ -60,177 +58,226 @@ def test_select_merged_keeps_changes_with_a_commit_in_the_range():
     assert [item.number for item in select_merged(changes, {"a", "b"})] == [1, 2, 4]
 
 
-def make_config(tmp_path, notify='["github", "telegram"]', workflow=WORKFLOW):
-    return parse_config(
-        {
-            "settings": {"state-file": str(tmp_path / "state.json")},
-            "repo": [
-                {
-                    "repository": "Org/proj",
-                    "workflow": workflow,
-                    "notify": json.loads(notify),
-                    "telegram-chat": "-100_9",
-                    "stg": {},
-                }
-            ],
-        }
+API = "/api/v3/repos/Org/proj"
+
+
+@pytest.fixture
+def app_env(dokku_env, fake_api):
+    """App proj-stg deploying develop of a GitHub repository served by `fake_api`, notifying both channels."""
+    dokku_env.git_auth("127.0.0.1", "GH")
+    dokku_env.configure(
+        "proj-stg",
+        repository=f"{fake_api.url}/Org/proj",
+        forge="github",
+        branch="develop",
+        workflow=WORKFLOW,
+        notify="comment,telegram",
+        telegram_chat="-100_9",
     )
+    dokku_env.configure(GLOBAL, telegram_bot_token="TG")
+    return dokku_env
 
 
 def github_state(fake_api, head="c3", runs=None, compare=("c2", "c3"), pulls=None):
-    fake_api.routes["GET /repos/Org/proj/branches/develop"] = (200, {"commit": {"sha": head}})
-    fake_api.routes["GET /repos/Org/proj/actions/runs"] = (
-        200,
-        {"workflow_runs": runs if runs is not None else [run()]},
-    )
-    fake_api.routes["GET /repos/Org/proj/compare/c1...c3"] = (200, {"commits": [{"sha": sha} for sha in compare]})
-    fake_api.routes["GET /repos/Org/proj/pulls"] = (200, pulls if pulls is not None else [pr(10, "c2"), pr(9, "c1")])
-    fake_api.routes["POST /repos/Org/proj/issues/10/comments"] = (201, {})
+    fake_api.routes[f"GET {API}/branches/develop"] = (200, {"commit": {"sha": head}})
+    fake_api.routes[f"GET {API}/actions/runs"] = (200, {"workflow_runs": runs if runs is not None else [run()]})
+    fake_api.routes[f"GET {API}/compare/c1...c3"] = (200, {"commits": [{"sha": sha} for sha in compare]})
+    fake_api.routes[f"GET {API}/pulls"] = (200, pulls if pulls is not None else [pr(10, "c2"), pr(9, "c1")])
+    fake_api.routes[f"POST {API}/issues/10/comments"] = (201, {})
     fake_api.routes["POST /botTG/sendMessage"] = (200, {"ok": True})
 
 
-def write_state(tmp_path, **entry):
-    (tmp_path / "state.json").write_text(json.dumps({"proj-stg": entry}))
+def write_state(env, **entry):
+    save_state(env.properties, "proj-stg", entry)
 
 
-def read_state(tmp_path):
-    return json.loads((tmp_path / "state.json").read_text())["proj-stg"]
+def read_state(env):
+    return load_state(env.properties, "proj-stg")
 
 
-def do_poll(config, fake_api, output=None, force=()):
+def do_poll(env, fake_api, output=None, redeploy=()):
     return poll(
-        config,
-        github_token="GH",
-        telegram_token="TG",
-        force_apps=force,
-        github_api=fake_api.url,
+        env.properties,
+        redeploy=redeploy,
         telegram_api=fake_api.url,
         on_output=(output.append if output is not None else lambda chunk: None),
     )
 
 
+def clone_url(fake_api):
+    return f"{fake_api.url}/Org/proj.git"
+
+
 class TestPoll:
-    def test_green_ci_deploys_exact_sha_and_notifies(self, tmp_path, fake_api, fake_dokku):
+    def test_green_ci_deploys_exact_sha_and_notifies(self, app_env, fake_api, fake_dokku):
         github_state(fake_api)
         fake_dokku.set(output="-----> Building\n")
-        write_state(tmp_path, sha="c1", status="deployed", deployed_sha="c1")
+        write_state(app_env, sha="c1", status="deployed", deployed_sha="c1")
         output = []
-        assert do_poll(make_config(tmp_path), fake_api, output) == 0
-        assert fake_dokku.syncs == ["git:sync --build proj-stg https://github.com/Org/proj.git c3"]
+        assert do_poll(app_env, fake_api, output) == 0
+        assert fake_dokku.syncs == [f"git:sync --build proj-stg {clone_url(fake_api)} c3"]
         assert b"".join(output) == b"-----> Building\n"
-        assert (read_state(tmp_path)["status"], read_state(tmp_path)["deployed_sha"]) == ("deployed", "c3")
-        assert [path for path, _ in fake_api.posts()] == ["/repos/Org/proj/issues/10/comments", "/botTG/sendMessage"]
+        assert (read_state(app_env)["status"], read_state(app_env)["deployed_sha"]) == ("deployed", "c3")
+        assert [path for path, _ in fake_api.posts()] == [f"{API}/issues/10/comments", "/botTG/sendMessage"]
 
-    def test_empty_workflow_deploys_without_asking_for_ci_runs(self, tmp_path, fake_api, fake_dokku):
+    def test_empty_workflow_deploys_without_asking_for_ci_runs(self, app_env, fake_api, fake_dokku):
         github_state(fake_api, runs=[run(status="in_progress", conclusion=None)])
         fake_dokku.set()
-        write_state(tmp_path, sha="c1", status="deployed", deployed_sha="c1")
-        assert do_poll(make_config(tmp_path, notify="[]", workflow=""), fake_api) == 0
-        assert fake_dokku.syncs == ["git:sync --build proj-stg https://github.com/Org/proj.git c3"]
+        write_state(app_env, sha="c1", status="deployed", deployed_sha="c1")
+        app_env.configure("proj-stg", notify="none", workflow="none")
+        assert do_poll(app_env, fake_api) == 0
+        assert fake_dokku.syncs == [f"git:sync --build proj-stg {clone_url(fake_api)} c3"]
         assert not [path for _, path, _, _ in fake_api.requests if path.endswith("/actions/runs")]
 
-    def test_notifications_include_the_app_url(self, tmp_path, fake_api, fake_dokku):
+    def test_notifications_include_the_app_url(self, app_env, fake_api, fake_dokku):
         github_state(fake_api)
         fake_dokku.set(url="https://proj-stg.example.com")
-        write_state(tmp_path, sha="c1", status="deployed", deployed_sha="c1")
-        do_poll(make_config(tmp_path), fake_api)
+        write_state(app_env, sha="c1", status="deployed", deployed_sha="c1")
+        do_poll(app_env, fake_api)
         comment, telegram = (body for _, body in fake_api.posts())
         assert "https://proj-stg.example.com" in comment["body"]
         assert "https://proj-stg.example.com" in telegram["text"]
 
-    def test_waits_while_ci_runs(self, tmp_path, fake_api, fake_dokku):
+    def test_waits_while_ci_runs(self, app_env, fake_api, fake_dokku):
         github_state(fake_api, runs=[run(status="in_progress", conclusion=None)])
-        write_state(tmp_path, sha="c1", status="deployed", deployed_sha="c1")
-        assert do_poll(make_config(tmp_path), fake_api) == 0
+        write_state(app_env, sha="c1", status="deployed", deployed_sha="c1")
+        assert do_poll(app_env, fake_api) == 0
         assert fake_dokku.syncs == []
-        assert read_state(tmp_path)["sha"] == "c1"
+        assert read_state(app_env)["sha"] == "c1"
 
-    def test_red_ci_is_recorded_without_deploy_or_notification(self, tmp_path, fake_api, fake_dokku):
+    def test_red_ci_is_recorded_without_deploy_or_notification(self, app_env, fake_api, fake_dokku):
         github_state(fake_api, runs=[run(conclusion="failure")])
-        write_state(tmp_path, sha="c1", status="deployed", deployed_sha="c1")
-        assert do_poll(make_config(tmp_path), fake_api) == 0
+        write_state(app_env, sha="c1", status="deployed", deployed_sha="c1")
+        assert do_poll(app_env, fake_api) == 0
         assert fake_dokku.syncs == []
-        assert read_state(tmp_path)["status"] == "ci_failed"
+        assert read_state(app_env)["status"] == "ci_failed"
         assert fake_api.posts() == []
 
-    def test_failed_deploy_is_reported_once_and_retried_only_with_force(self, tmp_path, fake_api, fake_dokku):
+    def test_failed_deploy_is_reported_once_and_retried_only_with_redeploy(self, app_env, fake_api, fake_dokku):
         github_state(fake_api)
         fake_dokku.set(exit_code=1, output=" ! pip install failed\n")
-        write_state(tmp_path, sha="c1", status="deployed", deployed_sha="c1")
-        config = make_config(tmp_path, notify='["github"]')
-        do_poll(config, fake_api)
+        write_state(app_env, sha="c1", status="deployed", deployed_sha="c1")
+        app_env.configure("proj-stg", notify="comment")
+        do_poll(app_env, fake_api)
         (comment,) = fake_api.posts()
         assert "pip install failed" in comment[1]["body"]
-        assert read_state(tmp_path) | {"at": None} == {
+        assert read_state(app_env) | {"at": None} == {
             "sha": "c3",
             "status": "deploy_failed",
             "deployed_sha": "c1",
             "at": None,
         }
-        do_poll(config, fake_api)
+        do_poll(app_env, fake_api)
         assert len(fake_dokku.syncs) == 1
         fake_dokku.set(exit_code=0)
-        do_poll(config, fake_api, force=["proj-stg"])
+        do_poll(app_env, fake_api, redeploy=["proj-stg"])
         assert len(fake_dokku.syncs) == 2
-        assert read_state(tmp_path)["status"] == "deployed"
+        assert read_state(app_env)["status"] == "deployed"
 
-    def test_locked_app_is_left_alone(self, tmp_path, fake_api, fake_dokku):
+    def test_locked_app_is_left_alone(self, app_env, fake_api, fake_dokku):
         github_state(fake_api)
         fake_dokku.set(locked=True)
-        write_state(tmp_path, sha="c1", status="deployed", deployed_sha="c1")
-        assert do_poll(make_config(tmp_path), fake_api) == 0
+        write_state(app_env, sha="c1", status="deployed", deployed_sha="c1")
+        assert do_poll(app_env, fake_api) == 0
         assert fake_dokku.syncs == []
-        assert read_state(tmp_path)["sha"] == "c1"
+        assert read_state(app_env)["sha"] == "c1"
         assert fake_api.posts() == []
 
-    def test_lock_taken_during_our_sync_is_not_our_failure(self, tmp_path, fake_api, fake_dokku):
+    def test_lock_taken_during_our_sync_is_not_our_failure(self, app_env, fake_api, fake_dokku):
         github_state(fake_api)
         fake_dokku.set(exit_code=1, lock_during_sync=True)
-        write_state(tmp_path, sha="c1", status="deployed", deployed_sha="c1")
-        assert do_poll(make_config(tmp_path), fake_api) == 0
+        write_state(app_env, sha="c1", status="deployed", deployed_sha="c1")
+        assert do_poll(app_env, fake_api) == 0
         assert len(fake_dokku.syncs) == 1
-        assert read_state(tmp_path)["sha"] == "c1"
+        assert read_state(app_env)["sha"] == "c1"
         assert fake_api.posts() == []
 
-    def test_forced_redeploy_of_same_sha_skips_pr_comments_but_not_telegram(self, tmp_path, fake_api, fake_dokku):
+    def test_redeploy_of_same_sha_skips_pr_comments_but_not_telegram(self, app_env, fake_api, fake_dokku):
         github_state(fake_api, pulls=[pr(10, "c3")])
         fake_dokku.set()
-        write_state(tmp_path, sha="c3", status="deployed", deployed_sha="c3")
-        do_poll(make_config(tmp_path), fake_api, force=["proj-stg"])
+        write_state(app_env, sha="c3", status="deployed", deployed_sha="c3")
+        do_poll(app_env, fake_api, redeploy=["proj-stg"])
         assert len(fake_dokku.syncs) == 1
         assert [path for path, _ in fake_api.posts()] == ["/botTG/sendMessage"]
 
-    def test_first_deploy_without_state_notifies_only_the_head_pr(self, tmp_path, fake_api, fake_dokku):
+    def test_first_deploy_without_state_notifies_only_the_head_pr(self, app_env, fake_api, fake_dokku):
         github_state(fake_api, pulls=[pr(10, "c3"), pr(9, "c1")])
-        fake_api.routes["POST /repos/Org/proj/issues/10/comments"] = (201, {})
         fake_dokku.set()
-        do_poll(make_config(tmp_path, notify='["github"]'), fake_api)
-        assert [path for path, _ in fake_api.posts()] == ["/repos/Org/proj/issues/10/comments"]
+        app_env.configure("proj-stg", notify="comment")
+        do_poll(app_env, fake_api)
+        assert [path for path, _ in fake_api.posts()] == [f"{API}/issues/10/comments"]
 
-    def test_commit_already_running_is_recorded_without_rebuilding(self, tmp_path, fake_api, fake_dokku):
+    def test_commit_already_running_is_recorded_without_rebuilding(self, app_env, fake_api, fake_dokku):
         github_state(fake_api)
         fake_dokku.set(deploy_source="https://example.com/Org/proj.git#c3")
-        assert do_poll(make_config(tmp_path), fake_api) == 0
+        assert do_poll(app_env, fake_api) == 0
         assert fake_dokku.syncs == []
-        assert (read_state(tmp_path)["status"], read_state(tmp_path)["deployed_sha"]) == ("deployed", "c3")
+        assert (read_state(app_env)["status"], read_state(app_env)["deployed_sha"]) == ("deployed", "c3")
         assert fake_api.posts() == []
 
-    def test_force_rebuilds_even_if_commit_is_already_running(self, tmp_path, fake_api, fake_dokku):
+    def test_redeploy_rebuilds_even_if_commit_is_already_running(self, app_env, fake_api, fake_dokku):
         github_state(fake_api)
         fake_dokku.set(deploy_source="https://example.com/Org/proj.git#c3")
-        do_poll(make_config(tmp_path), fake_api, force=["proj-stg"])
+        do_poll(app_env, fake_api, redeploy=["proj-stg"])
         assert len(fake_dokku.syncs) == 1
 
-    def test_app_running_another_commit_is_deployed(self, tmp_path, fake_api, fake_dokku):
+    def test_app_running_another_commit_is_deployed(self, app_env, fake_api, fake_dokku):
         """Regression: `GIT_REV` named the head after a failed manual deploy of it, which was then taken as deployed.
         Only the last successful deploy counts."""
         github_state(fake_api)
         fake_dokku.set(deploy_source="https://example.com/Org/proj.git#c1")
-        do_poll(make_config(tmp_path, notify="[]"), fake_api)
+        app_env.configure("proj-stg", notify="none")
+        do_poll(app_env, fake_api)
         assert len(fake_dokku.syncs) == 1
 
-    def test_api_error_counts_as_error_and_keeps_state(self, tmp_path, fake_api, fake_dokku):
-        write_state(tmp_path, sha="c1", status="deployed", deployed_sha="c1")
-        assert do_poll(make_config(tmp_path), fake_api) == 1
+    def test_api_error_counts_as_error_and_keeps_state(self, app_env, fake_api, fake_dokku):
+        write_state(app_env, sha="c1", status="deployed", deployed_sha="c1")
+        assert do_poll(app_env, fake_api) == 1
         assert fake_dokku.syncs == []
-        assert read_state(tmp_path)["sha"] == "c1"
+        assert read_state(app_env)["sha"] == "c1"
+
+
+class TestPollApps:
+    def test_apps_without_repository_are_ignored(self, app_env, fake_api, fake_dokku):
+        github_state(fake_api)
+        fake_dokku.set()
+        app_env.configure("other", branch="main")
+        assert do_poll(app_env, fake_api) == 0
+        assert [sync.split()[2] for sync in fake_dokku.syncs] == ["proj-stg"]
+
+    def test_invalid_app_is_an_error_and_others_still_deploy(self, app_env, fake_api, fake_dokku):
+        github_state(fake_api)
+        fake_dokku.set()
+        app_env.configure("broken", repository=f"{fake_api.url}/Org/proj", forge="github")
+        assert do_poll(app_env, fake_api) == 1
+        assert [sync.split()[2] for sync in fake_dokku.syncs] == ["proj-stg"]
+
+    def test_workflow_and_notify_fall_back_to_global(self, app_env, fake_api, fake_dokku):
+        github_state(fake_api, runs=[run(path=".github/workflows/global.yml")])
+        fake_dokku.set()
+        app_env.properties.delete("proj-stg", "workflow")
+        app_env.properties.delete("proj-stg", "notify")
+        app_env.configure(GLOBAL, workflow=".github/workflows/global.yml", notify="telegram")
+        assert do_poll(app_env, fake_api) == 0
+        assert len(fake_dokku.syncs) == 1
+        assert [path for path, _ in fake_api.posts()] == ["/botTG/sendMessage"]
+
+    def test_missing_forge_token_is_an_error_without_calling_the_api(self, app_env, fake_api, fake_dokku):
+        (app_env.home / ".netrc").write_text("machine gitlab.com login bot password X\n")
+        assert do_poll(app_env, fake_api) == 1
+        assert fake_api.requests == []
+
+    def test_api_calls_use_the_netrc_token(self, app_env, fake_api, fake_dokku):
+        github_state(fake_api, runs=[run(status="queued", conclusion=None)])
+        do_poll(app_env, fake_api)
+        assert fake_api.headers[0]["Authorization"] == "Bearer GH"
+
+
+@pytest.mark.parametrize("value", ["{not json", "[]"])
+def test_unreadable_state_starts_over(app_env, fake_api, fake_dokku, value):
+    github_state(fake_api)
+    fake_dokku.set(deploy_source="https://example.com/Org/proj.git#c3")
+    app_env.properties.set("proj-stg", "state", value)
+    assert do_poll(app_env, fake_api) == 0
+    assert fake_dokku.syncs == []
+    assert read_state(app_env)["status"] == "deployed"

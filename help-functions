@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -eo pipefail
+[[ $DOKKU_TRACE ]] && set -x
+
+cmd-auto-deploy-help() {
+  declare desc="help command"
+  declare CMD="$1"
+  local plugin_name="auto-deploy"
+  local plugin_description="Deploy apps from their forge branches once CI passes"
+
+  if [[ "$CMD" == "${plugin_name}:help" ]]; then
+    echo -e "Usage: dokku ${plugin_name}[:COMMAND]"
+    echo ''
+    echo "$plugin_description"
+    echo ''
+    echo 'Additional commands:'
+    fn-auto-deploy-help-content | sort | column -c2 -t -s,
+    echo ''
+    echo 'Each command also takes --help.'
+  elif [[ $(ps -o command= $PPID) == *"--all"* ]]; then
+    fn-auto-deploy-help-content
+  else
+    cat <<help_desc
+    $plugin_name, $plugin_description
+help_desc
+  fi
+}
+
+fn-auto-deploy-help-content() {
+  declare desc="return help content"
+  cat <<help_content
+    auto-deploy:notify-test <app> [--pull-request <number>], Sends a test Telegram message and optionally a test comment
+    auto-deploy:poll [--redeploy <app>] [--verbose], Deploys every configured app whose branch head passed CI
+    auto-deploy:report [<app>|--global], Displays settings and the last handled commit
+    auto-deploy:set <app>|--global <key> [<value>], Sets a setting, or unsets it when no value is given
+help_content
+}

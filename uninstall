@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -eo pipefail
+[[ $DOKKU_TRACE ]] && set -x
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/internal-functions"
+
+trigger-auto-deploy-uninstall() {
+  declare desc="removes the systemd units; settings and state stay, so a reinstall picks them up"
+  declare trigger="uninstall"
+  declare PLUGIN="$1"
+
+  [[ "$PLUGIN" == "auto-deploy" ]] || return 0
+  fn-auto-deploy-uninstall-systemd-units
+}
+
+trigger-auto-deploy-uninstall "$@"

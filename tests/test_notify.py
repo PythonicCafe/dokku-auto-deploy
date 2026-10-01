@@ -1,6 +1,5 @@
 import logging
 
-from dokku_auto_deploy.config import Target
 from dokku_auto_deploy.forge import Change
 from dokku_auto_deploy.github import GitHub
 from dokku_auto_deploy.notify import (
@@ -11,20 +10,32 @@ from dokku_auto_deploy.notify import (
     notify,
     telegram_text,
 )
+from dokku_auto_deploy.repository import Repository
+from dokku_auto_deploy.settings import AppConfig
 
 SHA = "abcdef1234567890"
 
 
-def make_target(notify=(), telegram_chat=""):
-    return Target(
-        repository="Org/proj",
-        environment="stg",
+REPOSITORY = Repository("https://github.com/Org/proj", "github")
+
+
+def make_target(notify=(), telegram_chat=None):
+    return AppConfig(
         app="proj-stg",
+        repository=REPOSITORY,
         branch="develop",
         workflow=".github/workflows/ci.yml",
         notify=tuple(notify),
         telegram_chat=telegram_chat,
     )
+
+
+def github(api_url=None):
+    """GitHub client for `REPOSITORY`, talking to `api_url` (the fake API) instead of api.github.com."""
+    client = GitHub(REPOSITORY, "gh")
+    if api_url:
+        client.api = api_url
+    return client
 
 
 APP_URL = "https://proj-stg.example.com"
@@ -72,7 +83,7 @@ class TestGitHubComment:
     def test_failure_includes_log_and_retry_command(self):
         body = comment_body(make_result(success=False, output="step 1\n ! boom\n"))
         assert " ! boom" in body
-        assert "dokku-auto-deploy poll --force proj-stg" in body
+        assert "dokku auto-deploy:poll --redeploy proj-stg" in body
 
 
 class TestTelegram:
@@ -100,8 +111,8 @@ class TestNotify:
     def test_github_comments_on_each_merged_pr(self, fake_api):
         fake_api.routes["POST /repos/Org/proj/issues/7/comments"] = (201, {})
         fake_api.routes["POST /repos/Org/proj/issues/8/comments"] = (201, {})
-        result = make_result(changes=[PR_7, pull(8)], target=make_target(notify=["github"]))
-        failures = notify(result, GitHub("Org/proj", "gh", fake_api.url), telegram_token=None)
+        result = make_result(changes=[PR_7, pull(8)], target=make_target(notify=["comment"]))
+        failures = notify(result, github(fake_api.url), telegram_token=None)
         assert failures == []
         assert [path for path, _ in fake_api.posts()] == [
             "/repos/Org/proj/issues/7/comments",
@@ -109,14 +120,14 @@ class TestNotify:
         ]
 
     def test_github_without_prs_sends_nothing(self, fake_api):
-        result = make_result(changes=[], target=make_target(notify=["github"]))
-        assert notify(result, GitHub("Org/proj", "gh", fake_api.url), telegram_token=None) == []
+        result = make_result(changes=[], target=make_target(notify=["comment"]))
+        assert notify(result, github(fake_api.url), telegram_token=None) == []
         assert fake_api.posts() == []
 
     def test_telegram_sends_to_topic(self, fake_api):
         fake_api.routes["POST /botTOKEN/sendMessage"] = (200, {"ok": True})
         result = make_result(target=make_target(notify=["telegram"], telegram_chat="-100_29"))
-        assert notify(result, GitHub("Org/proj", "gh"), telegram_token="TOKEN", telegram_api=fake_api.url) == []
+        assert notify(result, github(), telegram_token="TOKEN", telegram_api=fake_api.url) == []
         ((path, fields),) = fake_api.posts()
         assert path == "/botTOKEN/sendMessage"
         assert (fields["chat_id"], fields["message_thread_id"], fields["parse_mode"]) == ("-100", "29", "HTML")
@@ -124,10 +135,10 @@ class TestNotify:
     def test_failing_channel_does_not_stop_the_others_and_hides_the_token(self, fake_api):
         fake_api.routes["POST /botTOKEN/sendMessage"] = (400, {"ok": False, "description": "chat not found"})
         fake_api.routes["POST /repos/Org/proj/issues/7/comments"] = (201, {})
-        target = make_target(notify=["telegram", "github"], telegram_chat="-100")
+        target = make_target(notify=["telegram", "comment"], telegram_chat="-100")
         failures = notify(
             make_result(changes=[PR_7], target=target),
-            GitHub("Org/proj", "gh", fake_api.url),
+            github(fake_api.url),
             telegram_token="TOKEN",
             telegram_api=fake_api.url,
         )
@@ -137,7 +148,7 @@ class TestNotify:
 
     def test_telegram_without_token_is_a_failure(self):
         target = make_target(notify=["telegram"], telegram_chat="-100")
-        (failure,) = notify(make_result(target=target), GitHub("Org/proj", "gh"), telegram_token=None)
+        (failure,) = notify(make_result(target=target), github(), telegram_token=None)
         assert "token" in failure
 
 
@@ -146,20 +157,20 @@ class TestNotifyLog:
         fake_api.routes["POST /repos/Org/proj/issues/7/comments"] = (201, {})
         caplog.set_level(logging.INFO)
         notify(
-            make_result(changes=[PR_7], target=make_target(notify=["github"])),
-            GitHub("Org/proj", "gh", fake_api.url),
+            make_result(changes=[PR_7], target=make_target(notify=["comment"])),
+            github(fake_api.url),
             None,
         )
         assert "[proj-stg] GitHub: commented on #7" in caplog.messages
 
     def test_logs_why_github_did_not_comment(self, caplog):
         caplog.set_level(logging.INFO)
-        notify(make_result(changes=[], target=make_target(notify=["github"])), GitHub("Org/proj", "gh"), None)
+        notify(make_result(changes=[], target=make_target(notify=["comment"])), github(), None)
         assert "[proj-stg] GitHub: no merged change in this deploy, nothing to comment" in caplog.messages
 
     def test_logs_telegram_message(self, fake_api, caplog):
         fake_api.routes["POST /botTOKEN/sendMessage"] = (200, {"ok": True})
         caplog.set_level(logging.INFO)
         target = make_target(notify=["telegram"], telegram_chat="-100_29")
-        notify(make_result(target=target), GitHub("Org/proj", "gh"), "TOKEN", telegram_api=fake_api.url)
+        notify(make_result(target=target), github(), "TOKEN", telegram_api=fake_api.url)
         assert "[proj-stg] Telegram: message sent to -100_29" in caplog.messages

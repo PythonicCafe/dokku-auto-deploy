@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -eo pipefail
+[[ $DOKKU_TRACE ]] && set -x
+source "$PLUGIN_CORE_AVAILABLE_PATH/common/property-functions"
+
+trigger-auto-deploy-post-delete() {
+  declare desc="removes the settings and state of a deleted app"
+  declare trigger="post-delete"
+  declare APP="$1"
+
+  fn-plugin-property-destroy "auto-deploy" "$APP"
+}
+
+trigger-auto-deploy-post-delete "$@"

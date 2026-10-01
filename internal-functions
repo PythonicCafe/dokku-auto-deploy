@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+set -eo pipefail
+[[ $DOKKU_TRACE ]] && set -x
+
+AUTO_DEPLOY_SYSTEMD_DIR="${AUTO_DEPLOY_SYSTEMD_DIR:-/etc/systemd/system}"
+AUTO_DEPLOY_UNIT="dokku-auto-deploy"
+
+fn-auto-deploy-write-if-changed() {
+  declare desc="writes stdin to a file unless it already has that content; returns 1 when nothing changed"
+  declare FILE="$1"
+  local content
+  content="$(cat)"
+  if [[ -f "$FILE" ]] && [[ "$(cat "$FILE")" == "$content" ]]; then
+    return 1
+  fi
+  echo "$content" >"$FILE"
+}
+
+fn-auto-deploy-systemd-available() {
+  declare desc="whether systemd is the init system"
+  [[ -d /run/systemd/system ]] && command -v systemctl >/dev/null
+}
+
+fn-auto-deploy-install-systemd-units() {
+  declare desc="writes the service and timer that run auto-deploy:poll; enabling the timer is left to the admin"
+  local dokku_bin changed=false
+  fn-auto-deploy-systemd-available || return 0
+  dokku_bin="$(command -v dokku)"
+
+  fn-auto-deploy-write-if-changed "$AUTO_DEPLOY_SYSTEMD_DIR/$AUTO_DEPLOY_UNIT.service" <<EOF_SERVICE && changed=true
+[Unit]
+Description=Deploy Dokku apps whose CI passed (dokku auto-deploy plugin)
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+User=$DOKKU_SYSTEM_USER
+ExecStart=$dokku_bin auto-deploy:poll
+# Each deploy has its own 1h timeout; killing poll in the middle of a build would leave the app locked
+TimeoutStartSec=infinity
+EOF_SERVICE
+
+  fn-auto-deploy-write-if-changed "$AUTO_DEPLOY_SYSTEMD_DIR/$AUTO_DEPLOY_UNIT.timer" <<EOF_TIMER && changed=true
+[Unit]
+Description=Run dokku auto-deploy:poll every minute after the previous run finishes
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=1min
+
+[Install]
+WantedBy=timers.target
+EOF_TIMER
+
+  if [[ "$changed" == "true" ]]; then
+    systemctl daemon-reload
+  fi
+}
+
+fn-auto-deploy-uninstall-systemd-units() {
+  declare desc="stops, disables and removes the service and timer"
+  fn-auto-deploy-systemd-available || return 0
+  [[ -f "$AUTO_DEPLOY_SYSTEMD_DIR/$AUTO_DEPLOY_UNIT.timer" ]] || return 0
+  systemctl disable --now "$AUTO_DEPLOY_UNIT.timer" >/dev/null 2>&1 || true
+  rm -f "$AUTO_DEPLOY_SYSTEMD_DIR/$AUTO_DEPLOY_UNIT.service" "$AUTO_DEPLOY_SYSTEMD_DIR/$AUTO_DEPLOY_UNIT.timer"
+  systemctl daemon-reload
+}
