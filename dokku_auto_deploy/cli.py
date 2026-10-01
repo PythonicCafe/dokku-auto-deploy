@@ -67,7 +67,8 @@ def create_parser() -> argparse.ArgumentParser:
         f"{PREFIX}poll",
         help="Check every configured app once and deploy what passed CI",
         description="Check every app with a repository set and deploy its branch head once its CI passed. A head "
-        "already handled (deployed, failed CI, failed deploy) is skipped until the branch moves.",
+        "already deployed, or whose deploy failed, is skipped until the branch moves; one whose CI failed is deployed if a "
+        "re-run of its CI passes.",
     )
     poll.add_argument(
         "-r",

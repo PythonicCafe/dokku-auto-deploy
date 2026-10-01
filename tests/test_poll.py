@@ -22,6 +22,9 @@ class TestDecide:
             pytest.param("new", None, "missing", "wait", id="ci-not-started"),
             pytest.param("new", None, "pending", "wait", id="ci-running"),
             pytest.param("new", None, "failure", "ci_failed", id="ci-failed"),
+            pytest.param("abc", {"sha": "abc", "status": "ci_failed"}, "failure", "skip", id="ci-still-failed"),
+            pytest.param("abc", {"sha": "abc", "status": "ci_failed"}, "pending", "wait", id="ci-rerun-running"),
+            pytest.param("abc", {"sha": "abc", "status": "ci_failed"}, "success", "deploy", id="ci-rerun-green"),
         ],
     )
     def test_decide(self, head, state, ci, expected):
@@ -281,3 +284,23 @@ def test_unreadable_state_starts_over(app_env, fake_api, fake_dokku, value):
     assert do_poll(app_env, fake_api) == 0
     assert fake_dokku.syncs == []
     assert read_state(app_env)["status"] == "deployed"
+
+
+def test_successful_ci_rerun_deploys_a_commit_whose_ci_failed(app_env, fake_api, fake_dokku):
+    github_state(fake_api, runs=[run(conclusion="failure")])
+    fake_dokku.set()
+    write_state(app_env, sha="c1", status="deployed", deployed_sha="c1")
+    do_poll(app_env, fake_api)
+    do_poll(app_env, fake_api)
+    assert (read_state(app_env)["status"], fake_dokku.syncs) == ("ci_failed", [])
+    github_state(fake_api, runs=[run(conclusion="failure", run_id=1), run(run_id=2)])
+    do_poll(app_env, fake_api)
+    assert len(fake_dokku.syncs) == 1
+    assert read_state(app_env)["status"] == "deployed"
+
+
+def test_deployed_head_does_not_ask_for_ci_again(app_env, fake_api, fake_dokku):
+    github_state(fake_api)
+    write_state(app_env, sha="c3", status="deployed", deployed_sha="c3")
+    do_poll(app_env, fake_api)
+    assert [path for _, path, _, _ in fake_api.requests] == [f"{API}/branches/develop"]

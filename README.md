@@ -32,11 +32,11 @@ The reasons behind these choices are in [`docs/design-decisions.md`](docs/design
 For each app with a `repository` set, every run:
 
 1. Reads the head commit of the app's branch.
-2. If that commit was already handled, does nothing.
+2. If that commit was already handled (deployed, or its deploy failed), does nothing.
 3. Looks for the CI of that commit, triggered by a push to that branch: the runs of the configured workflow file
    (GitHub, Forgejo) or the push pipeline (GitLab); the latest one counts, so a successful retry wins. If there is none
-   yet or it is still running, waits for the next run. If it failed, records it and does nothing else. With
-   `workflow none` this step is skipped and every new commit is deployed.
+   yet or it is still running, waits for the next run. If it failed, records it and checks again on the next runs, in
+   case someone re-runs the CI. With `workflow none` this step is skipped and every new commit is deployed.
 4. If Dokku already runs that commit (its last successful deploy, per `dokku apps:report <app>
    --app-deploy-source-metadata`), only records it: no rebuild, no notification. If the app is locked in Dokku, waits
    for the next run.
@@ -48,7 +48,8 @@ For each app with a `repository` set, every run:
 What was handled is shown by `dokku auto-deploy:report <app>`:
 
 - `last handled`: the last branch head the plugin acted on, what happened to it (`deployed`, `deploy_failed` or
-  `ci_failed`) and when. A new run only acts again when the head changes.
+  `ci_failed`) and when. A new run only acts again when the head changes, or when the CI of a `ci_failed` head passes
+  on a re-run.
 - `last deployed`: the last commit deployed successfully. It differs from the handled one after a failed deploy, and
   it bounds which merged pull/merge requests get a comment on the next successful deploy.
 

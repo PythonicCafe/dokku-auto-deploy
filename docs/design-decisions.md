@@ -158,7 +158,9 @@ which printed the literal string `HEAD` on that server. `poll --redeploy <app>` 
 
 ## Failed deploys are not retried automatically
 
-A SHA whose deploy failed is recorded and left alone, so a broken commit isn't rebuilt every minute. Retrying is
+A SHA whose deploy failed is recorded and left alone, so a broken commit isn't rebuilt every minute. A SHA whose CI
+failed is different: nothing was built, and re-running a flaky CI is the usual fix, so its CI keeps being checked (one
+API call per cycle) and a successful re-run deploys it. Retrying is
 explicit (`poll --redeploy <app>`), which also puts an app back on its branch head after a manual deploy.
 
 ## State and notified changes

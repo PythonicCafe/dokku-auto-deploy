@@ -1,8 +1,9 @@
 """One polling cycle: for each configured app, deploy its branch head once CI passed, then report the result.
 
 Decision per app (see `decide`):
-- head SHA already handled (deployed, CI failed or deploy failed) -> skip. A failed deploy is not retried on its own,
-  to avoid rebuilding a broken commit every cycle; `redeploy` retries it.
+- head SHA already handled (deployed or deploy failed) -> skip. A failed deploy is not retried on its own, to avoid
+  rebuilding a broken commit every cycle; `redeploy` retries it. A head whose CI failed keeps being checked, so a
+  successful re-run of its CI deploys it.
 - CI of that SHA (push event on that branch, configured workflow) not finished -> wait for the next cycle.
   With `workflow none` there is no CI to wait for.
 - CI failed -> recorded, nothing deployed, nobody notified (the forge already shows the red CI).
@@ -41,8 +42,11 @@ class PollRunning(RuntimeError):
 
 
 def decide(head_sha: str, state: dict[str, Any] | None, ci: CIStatus | None) -> Action:
-    """What to do with `head_sha`, given the status of its CI (`None`: the repository has no CI to wait for)."""
-    if state is not None and state.get("sha") == head_sha:
+    """What to do with `head_sha`, given the status of its CI (`None`: the repository has no CI to wait for).
+
+    A head whose CI failed is still watched: a successful re-run of the same commit deploys it.
+    """
+    if state is not None and state.get("sha") == head_sha and (state.get("status") != "ci_failed" or ci == "failure"):
         return "skip"
     if ci is None or ci == "success":
         return "deploy"
@@ -119,13 +123,17 @@ def process_app(
     last_deployed = (previous or {}).get("deployed_sha")
     current = None if redeploy else previous
     ci = None
-    if config.workflow and (current is None or current.get("sha") != sha):
+    handled = current is not None and current.get("sha") == sha and current.get("status") != "ci_failed"
+    if config.workflow and not handled:
         ci = forge.ci_status(sha, branch, config.workflow)
     action = decide(sha, current, ci)
     if action == "skip":
         return
     if action == "wait":
-        logger.debug("[%s] %s@%s: waiting for CI", app, branch, sha[:8])
+        if redeploy:
+            logger.info("[%s] %s@%s: redeploy requested, but its CI hasn't passed yet: waiting", app, branch, sha[:8])
+        else:
+            logger.debug("[%s] %s@%s: waiting for CI", app, branch, sha[:8])
         return
     if action == "ci_failed":
         logger.info("[%s] %s@%s: CI failed, not deploying", app, branch, sha[:8])
