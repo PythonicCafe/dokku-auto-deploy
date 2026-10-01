@@ -14,6 +14,7 @@ from dokku_auto_deploy.telegram import Telegram
 logger = logging.getLogger(__name__)
 
 TELEGRAM_MAX_LENGTH = 4096
+TELEGRAM_LOG_ROOM = 1500  # Kept for the build log of a failed deploy, however many changes it has
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 
@@ -48,11 +49,38 @@ def comment_body(result: DeployResult) -> str:
     )
 
 
+def _fit_log(log: str, room: int) -> str:
+    """HTML-escaped end of `log` that fits in `room` characters, starting at a line boundary when possible.
+
+    Cut before escaping, so the cut never falls inside an entity like `&amp;`.
+    """
+    kept: list[str] = []
+    size = 0
+    for line in reversed(log.splitlines()):
+        escaped = html.escape(line)
+        cost = len(escaped) + (1 if kept else 0)
+        if size + cost > room:
+            if not kept:  # Not even the last line fits: keep as much of its end as fits
+                tail: list[str] = []
+                for char in reversed(line):
+                    escaped_char = html.escape(char)
+                    if size + len(escaped_char) > room:
+                        break
+                    tail.append(escaped_char)
+                    size += len(escaped_char)
+                kept.append("".join(reversed(tail)))
+            break
+        kept.append(escaped)
+        size += cost
+    return "\n".join(reversed(kept))
+
+
 def telegram_text(result: DeployResult) -> str:
-    """Message for `parse_mode=HTML`; the build log is cut (from the start) to fit the length limit.
+    """Message for `parse_mode=HTML`, within Telegram's length limit.
 
     The commit link sits behind the word "commit" and each change link spans its reference and title ("#12 Title");
-    the app URL is shown in full.
+    the app URL is shown in full. Changes that don't fit become "and N more", always leaving room for the build log of
+    a failed deploy, which is cut from its start.
     """
     target, sha = result.target, result.sha
     status = "succeeded" if result.success else "FAILED"
@@ -64,18 +92,21 @@ def telegram_text(result: DeployResult) -> str:
     if result.app_url:
         url = html.escape(result.app_url)
         lines.append(f'<a href="{url}">{url}</a>')
-    for change in result.changes:
+    reserved = 0 if result.success else TELEGRAM_LOG_ROOM
+    more_room = len(f"\nand {len(result.changes)} more")
+    room = TELEGRAM_MAX_LENGTH - reserved - more_room - len("\n".join(lines))
+    for index, change in enumerate(result.changes):
         label = html.escape(f"{change.reference} {change.title}".strip())
-        lines.append(f'<a href="{html.escape(change.url)}">{label}</a>')
+        line = f'<a href="{html.escape(change.url)}">{label}</a>'
+        if len(line) + 1 > room:
+            lines.append(f"and {len(result.changes) - index} more")
+            break
+        lines.append(line)
+        room -= len(line) + 1
     text = "\n".join(lines)
     if not result.success:
         room = TELEGRAM_MAX_LENGTH - len(text) - len("\n<pre></pre>")
-        log = html.escape(error_tail(result.output, max_lines=30))
-        if len(log) > room:
-            log = log[-room:]
-            if "\n" in log:  # Start at a line boundary, which also avoids starting inside an HTML entity
-                log = log[log.index("\n") + 1 :]
-        text += f"\n<pre>{log}</pre>"
+        text += f"\n<pre>{_fit_log(error_tail(result.output, max_lines=30), room)}</pre>"
     return text
 
 

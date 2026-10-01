@@ -1,4 +1,5 @@
 import logging
+import re
 
 from dokku_auto_deploy.forge import Change
 from dokku_auto_deploy.github import GitHub
@@ -105,6 +106,30 @@ class TestTelegram:
         assert "<script>" not in text
         assert "FINAL ERROR" in text
         assert len(text) <= TELEGRAM_MAX_LENGTH
+
+    def test_many_changes_are_summarized_and_leave_room_for_the_log(self):
+        """Regression: with enough changes there was no room left for the log, or the message went over the limit."""
+        changes = [pull(number, "A long title " * 18) for number in range(1, 201)]
+        text = telegram_text(make_result(success=False, output="step\n ! FINAL ERROR\n", changes=changes))
+        assert len(text) <= TELEGRAM_MAX_LENGTH
+        assert "#1 A long title" in text
+        assert re.search(r"\nand \d+ more\n", text)
+        shown = text.count("/pull/")
+        assert f"and {200 - shown} more" in text
+        assert "FINAL ERROR" in text
+
+    def test_successful_deploy_uses_the_whole_message_for_changes(self):
+        changes = [pull(number, "Title") for number in range(1, 201)]
+        text = telegram_text(make_result(changes=changes))
+        assert len(text) <= TELEGRAM_MAX_LENGTH
+        assert "#200 Title" not in text and text.count("/pull/") > 40
+
+    def test_log_is_never_cut_inside_an_html_entity(self):
+        """Regression: cutting after escaping could leave half an entity (`amp;`) at the start."""
+        for size in range(3000, 3200):
+            text = telegram_text(make_result(success=False, output="&" * size + "\n"))
+            log = text.split("<pre>")[1].removesuffix("</pre>")
+            assert log.startswith("&amp;") and len(text) <= TELEGRAM_MAX_LENGTH
 
 
 class TestNotify:
