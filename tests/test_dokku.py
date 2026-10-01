@@ -1,4 +1,5 @@
 import sys
+import time
 
 import pytest
 
@@ -17,6 +18,57 @@ def test_run_streaming_kills_on_timeout():
     code, output = run_streaming([sys.executable, "-c", "import time; print('start', flush=True); time.sleep(30)"], 1)
     assert code != 0
     assert output.startswith("start\n") and "killed after 1s" in output
+
+
+def test_run_streaming_timeout_kills_child_processes_too():
+    """Like `dokku` running a build: the children keep stdout open after the parent is gone."""
+    script = "import subprocess, time; print('start', flush=True); subprocess.Popen(['sleep', '30']); time.sleep(30)"
+    start = time.perf_counter()
+    code, output = run_streaming([sys.executable, "-c", script], 1)
+    assert time.perf_counter() - start < 10
+    assert code != 0 and "killed after 1s" in output
+
+
+class TestBuildSupervision:
+    """The build must never be left running unsupervised: it holds the app's deploy lock."""
+
+    @staticmethod
+    def script(marker, ignore_sigint=False):
+        """A build that prints a line, then writes `marker` 1s later (unless it was stopped)."""
+        ignore = "import signal; signal.signal(signal.SIGINT, signal.SIG_IGN); " if ignore_sigint else ""
+        return [
+            sys.executable,
+            "-c",
+            f"{ignore}import time, pathlib; print('start', flush=True); time.sleep(1); pathlib.Path({str(marker)!r}).touch()",
+        ]
+
+    def test_failing_output_callback_does_not_stop_following_the_build(self, tmp_path):
+        def broken(line):
+            raise BrokenPipeError("terminal gone")
+
+        code, output = run_streaming(self.script(tmp_path / "done"), 10, broken)
+        assert (code, output) == (0, "start\n")
+        assert (tmp_path / "done").exists()
+
+    def test_interrupt_stops_the_build(self, tmp_path):
+        def interrupt(line):
+            raise KeyboardInterrupt
+
+        with pytest.raises(KeyboardInterrupt):
+            run_streaming(self.script(tmp_path / "done"), 10, interrupt)
+        time.sleep(1.5)
+        assert not (tmp_path / "done").exists()
+
+    def test_build_ignoring_the_interrupt_is_killed_after_the_grace_period(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("dokku_auto_deploy.dokku.INTERRUPT_GRACE", 0.2)
+
+        def interrupt(line):
+            raise KeyboardInterrupt
+
+        with pytest.raises(KeyboardInterrupt):
+            run_streaming(self.script(tmp_path / "done", ignore_sigint=True), 10, interrupt)
+        time.sleep(1.5)
+        assert not (tmp_path / "done").exists()
 
 
 class TestLockState:
@@ -43,7 +95,7 @@ class TestLockState:
 
 def test_git_sync_uses_exact_sha(fake_dokku):
     fake_dokku.set(exit_code=0, output="ok\n")
-    assert git_sync("app", "https://github.com/Org/proj.git", "abc") == (True, "ok\n")
+    assert git_sync("app", "https://github.com/Org/proj.git", "abc") == (True, "ok\n", False)
     assert fake_dokku.syncs == ["git:sync --build app https://github.com/Org/proj.git abc"]
 
 

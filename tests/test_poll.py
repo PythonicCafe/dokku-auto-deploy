@@ -351,3 +351,14 @@ def test_locked_app_is_not_recorded_even_if_it_already_runs_the_head(app_env, fa
     write_state(app_env, sha="c1", status="deployed", deployed_sha="c1")
     assert do_poll(app_env, fake_api) == 0
     assert read_state(app_env)["sha"] == "c1"
+
+
+def test_timed_out_deploy_is_reported_even_though_it_leaves_the_app_locked(app_env, fake_api, fake_dokku, monkeypatch):
+    monkeypatch.setattr("dokku_auto_deploy.dokku.DEPLOY_TIMEOUT", 1)
+    github_state(fake_api)
+    fake_dokku.set(lock_during_sync="deploying", sync_sleep=10)
+    write_state(app_env, sha="c1", status="deployed", deployed_sha="c1")
+    do_poll(app_env, fake_api)
+    assert read_state(app_env)["status"] == "deploy_failed"
+    telegram = [body for path, body in fake_api.posts() if path == "/botTG/sendMessage"]
+    assert "dokku apps:unlock proj-stg" in telegram[0]["text"]

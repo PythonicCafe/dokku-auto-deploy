@@ -1,6 +1,9 @@
 """Calls to the local `dokku` CLI (the plugin runs as the dokku user on the Dokku host: no SSH key is involved)."""
 
+import contextlib
 import json
+import logging
+import os
 import signal
 import subprocess
 import threading
@@ -11,6 +14,25 @@ from dokku_auto_deploy.properties import lib_root
 
 DEPLOY_TIMEOUT = 60 * 60
 LOCK_CHECK_TIMEOUT = 60
+INTERRUPT_GRACE = 30
+
+logger = logging.getLogger(__name__)
+
+
+def _signal_group(process: subprocess.Popen[bytes], signum: int) -> None:
+    with contextlib.suppress(ProcessLookupError):  # Already gone
+        os.killpg(process.pid, signum)
+
+
+def _stop(process: subprocess.Popen[bytes]) -> None:
+    """Interrupt the process group like Ctrl+C would, and kill it if it's still there after `INTERRUPT_GRACE` seconds."""
+    _signal_group(process, signal.SIGINT)  # Its own session doesn't get the terminal's Ctrl+C: pass it on
+    try:
+        process.wait(timeout=INTERRUPT_GRACE)
+    except subprocess.TimeoutExpired:
+        logger.warning("Build still running %ss after the interrupt, killing it", INTERRUPT_GRACE)
+    _signal_group(process, signal.SIGKILL)  # Children may outlive `dokku` itself
+    process.wait()
 
 
 def run_streaming(
@@ -18,12 +40,23 @@ def run_streaming(
 ) -> tuple[int, str]:
     """Run `command`, passing each output line to `on_output` as it arrives and also returning the whole output.
 
-    stderr is merged into stdout (build logs interleave both). The process is killed after `timeout` seconds; the
-    returned output then ends with a note saying so. `subprocess.run(timeout=...)` can't be used because it only
-    returns the output at the end, and a deploy log must be visible (journald) while the build runs.
+    stderr is merged into stdout (build logs interleave both). After `timeout` seconds the whole process group is
+    killed: `dokku` runs the build in child processes that keep the output pipe open, so killing only `dokku` would
+    leave this waiting for them. The returned output then ends with a note saying so. `subprocess.run(timeout=...)`
+    can't be used because it only returns the output at the end, and a deploy log must be visible while it runs.
+
+    The build is never left running unsupervised: if `on_output` fails (e.g. the terminal went away), forwarding stops
+    but the build is still followed to its end; if this is interrupted (Ctrl+C, any other exception), the build is
+    stopped before the exception goes on.
     """
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    killer = threading.Timer(timeout, process.kill)
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
+    timed_out = threading.Event()
+
+    def kill_on_timeout() -> None:
+        timed_out.set()
+        _signal_group(process, signal.SIGKILL)
+
+    killer = threading.Timer(timeout, kill_on_timeout)
     killer.start()
     chunks = []
     try:
@@ -31,12 +64,19 @@ def run_streaming(
         for line in process.stdout:
             chunks.append(line)
             if on_output is not None:
-                on_output(line)
+                try:
+                    on_output(line)
+                except Exception:
+                    logger.warning("Can't show the build output anymore, following the build without it", exc_info=True)
+                    on_output = None
         returncode = process.wait()
+    except BaseException:
+        _stop(process)
+        raise
     finally:
         killer.cancel()
     output = b"".join(chunks).decode("utf-8", errors="replace")
-    if returncode == -signal.SIGKILL:
+    if timed_out.is_set():
         output += f"\nTimeout: process killed after {timeout}s\n"
     return returncode, output
 
@@ -92,8 +132,9 @@ def is_locked(app: str) -> bool:
 def runs_commit(app: str, sha: str) -> bool:
     """Whether the app's last successful deploy was `sha`, per Dokku's `deploy-source-metadata`.
 
-    Dokku only sets it after a deploy succeeds: `<sha>` for `git push`, `<remote>#<sha>` for `git:sync`. `GIT_REV`
-    can't be used for this: Dokku sets it before building, so it also names commits whose deploy failed.
+    Dokku writes it only when a deploy succeeds: `<sha>` for a `git push`, `<remote>#<sha>` for `git:sync`. Any other
+    value (empty, an image or archive deploy) means "not known to run it". `GIT_REV` can't be used: Dokku sets it
+    before building, so it also names commits whose deploy failed.
     """
     result = subprocess.run(
         ["dokku", "apps:report", app, "--app-deploy-source-metadata"],
@@ -122,12 +163,16 @@ def app_url(app: str) -> str | None:
 
 def git_sync(
     app: str, clone_url: str, sha: str, on_output: Callable[[bytes], object] | None = None
-) -> tuple[bool, str]:
-    """Fetch the exact `sha` from `clone_url` into the app repo and build it (`git:sync --build`); returns (ok, output).
+) -> tuple[bool, str, bool]:
+    """Fetch the exact `sha` from `clone_url` into the app repo and build it (`git:sync --build`).
 
-    With an explicit SHA, `git:sync` moves the deploy branch with `update-ref`, so it works even after someone
-    force-pushed another history to the app by hand.
+    Returns (ok, output, timed out). With an explicit SHA, `git:sync` moves the deploy branch with `update-ref`, so it
+    works even after someone force-pushed another history to the app by hand. A deploy killed by the timeout can't
+    remove Dokku's deploy lock file, so the app stays locked until `apps:unlock`; the output says so.
     """
     command = ["dokku", "git:sync", "--build", app, clone_url, sha]
     returncode, output = run_streaming(command, DEPLOY_TIMEOUT, on_output)
-    return returncode == 0, output
+    timed_out = returncode == -signal.SIGKILL
+    if timed_out:
+        output += f"The app may stay locked; after checking no deploy runs: dokku apps:unlock {app}\n"
+    return returncode == 0, output, timed_out

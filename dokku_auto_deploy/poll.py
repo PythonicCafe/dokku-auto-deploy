@@ -186,8 +186,11 @@ def process_app(
         record(properties, app, sha, "deployed", sha)
         return
     logger.info("[%s] deploying %s@%s", app, branch, sha[:8])
-    success, output = dokku.git_sync(app, config.repository.clone_url, sha, on_output)
-    if not success and dokku.is_locked(app):
+    success, output, timed_out = dokku.git_sync(app, config.repository.clone_url, sha, on_output)
+    if timed_out:
+        # Not a lost race: our own killed deploy left the lock file behind, so this must be reported, not retried
+        logger.error("[%s] deploy timed out; the app may stay locked (dokku apps:unlock %s)", app, app)
+    elif not success and dokku.is_locked(app):
         logger.info("[%s] app got locked during our deploy attempt, will retry", app)
         return
     status = "deployed" if success else "deploy_failed"

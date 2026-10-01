@@ -110,6 +110,7 @@ case "$1" in
   url) cat "$FAKE_DOKKU_DIR/url" 2>/dev/null; exit 0 ;;
   git:sync)
     [ -f "$FAKE_DOKKU_DIR/lock-during-sync" ] && cp "$FAKE_DOKKU_DIR/lock-during-sync" "$FAKE_LOCK_FILE"
+    [ -f "$FAKE_DOKKU_DIR/sync-sleep" ] && sleep "$(cat "$FAKE_DOKKU_DIR/sync-sleep")"
     cat "$FAKE_DOKKU_DIR/output" 2>/dev/null
     exit "$(cat "$FAKE_DOKKU_DIR/exit-code" 2>/dev/null || echo 0)" ;;
 esac
@@ -143,8 +144,14 @@ class FakeDokku:
         lock_during_sync: str | None = None,
         deploy_source: str = "",
         url: str = "",
+        sync_sleep: int = 0,
     ) -> None:
         (self.directory / "url").write_text(url + "\n" if url else "")
+        sleep_file = self.directory / "sync-sleep"
+        if sync_sleep:
+            sleep_file.write_text(str(sync_sleep))
+        else:
+            sleep_file.unlink(missing_ok=True)
         (self.directory / "exit-code").write_text(str(exit_code))
         (self.directory / "output").write_text(output)
         (self.directory / "deploy-source").write_text(deploy_source)

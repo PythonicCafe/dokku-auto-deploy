@@ -141,7 +141,8 @@ mode, fails immediately (it does not wait) if the lock is taken, and deletes the
   while the running container is still the manual deploy.
 - A deploy killed without releasing the lock (`kill -9`, crash) leaves the file behind and the tool waits forever,
   logging it every cycle; `dokku apps:unlock <app>` fixes it. The tool never unlocks on its own: other tools we looked
-  at do, which silently overrides manual deploys.
+  at do, which silently overrides manual deploys. The tool's own deploy timeout is such a kill: that deploy is
+  recorded as failed and notified with the `apps:unlock` hint, instead of being taken for a lost race.
 
 Orphan lock after a failed build (checked on Dokku 0.38.28, 2026-09-30): when the build fails, Dokku's failure path
 (`dokku_log_fail`, which calls `exit 1`) runs before `release_app_deploy_lock`, so `.deploy.lock` stays behind holding
