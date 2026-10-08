@@ -1,0 +1,4 @@
+# Dokku convention: functions declare `desc` (and triggers `trigger`) as inline documentation
+disable=SC2034
+# Dokku core files sourced at runtime are not in this repository
+disable=SC1091

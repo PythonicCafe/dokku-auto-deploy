@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -eo pipefail
+[[ $DOKKU_TRACE ]] && set -x
+source "$PLUGIN_CORE_AVAILABLE_PATH/common/property-functions"
+
+trigger-auto-deploy-cron-entries() {
+  declare desc="adds auto-deploy:poll, every minute, to the dokku user's crontab when the schedule is cron"
+  declare trigger="cron-entries"
+  declare DOKKU_SCHEDULER="$1"
+
+  # Dokku asks once per scheduler that uses the host crontab; answering only for docker-local avoids duplicates
+  [[ "$DOKKU_SCHEDULER" == "docker-local" ]] || return 0
+  [[ "$(fn-plugin-property-get "auto-deploy" "--global" "schedule")" == "cron" ]] || return 0
+  echo "* * * * *;dokku auto-deploy:poll;${DOKKU_LOGS_DIR:-/var/log/dokku}/auto-deploy.log"
+}
+
+trigger-auto-deploy-cron-entries "$@"

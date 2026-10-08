@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -eo pipefail
+[[ $DOKKU_TRACE ]] && set -x
+
+# Dokku runs subcommands/default for a bare `dokku auto-deploy`, and subcommands/<name> for `dokku auto-deploy:<name>`
+# (`execute_dokku_cmd` in the dokku script); every <name> is a symlink to this file. Commands run as the dokku user.
+PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+case "$1" in
+  auto-deploy | auto-deploy:help)
+    source "$PLUGIN_ROOT/help-functions"
+    cmd-auto-deploy-help "auto-deploy:help"
+    ;;
+  *)
+    # -I ignores PYTHON* variables and keeps the current directory off sys.path (an argparse.py there would be imported
+    # as the dokku user), so the plugin directory is added explicitly
+    exec python3 -I -c 'import sys; sys.path.insert(0, sys.argv.pop(1)); from dokku_auto_deploy.cli import main; sys.exit(main())' \
+      "$PLUGIN_ROOT" "$@"
+    ;;
+esac

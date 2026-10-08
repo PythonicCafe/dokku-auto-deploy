@@ -1,0 +1,42 @@
+# Not a Python package: the Dokku plugin runs the code in place. This file only configures the dev tools.
+
+[dependency-groups]
+dev = [
+    "coverage>=7",
+    "mypy>=1.15",
+    "pytest>=8",
+    "pytest-cov>=6",
+    "ruff>=0.11",
+    "shellcheck-py>=0.10",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "SIM", "C4", "A", "UP", "B"]
+ignore = ["E203", "E231", "E501", "E701"]
+
+[tool.ruff.lint.isort]
+split-on-trailing-comma = true
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+enable_error_code = ["possibly-undefined"]
+files = ["dokku_auto_deploy"]
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.coverage.run]
+source = ["dokku_auto_deploy"]
+
+[tool.coverage.report]
+show_missing = true

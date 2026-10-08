@@ -1,0 +1,4 @@
+[plugin]
+description = "Deploys apps from their forge branches once CI passes, without server credentials on the forge"
+version = "0.1.0"
+[plugin.config]

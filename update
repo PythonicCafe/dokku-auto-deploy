@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -eo pipefail
+[[ $DOKKU_TRACE ]] && set -x
+
+# `plugin:update` runs the update trigger, not install: both need the same idempotent setup
+exec "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/install" "$@"

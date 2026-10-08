@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -eo pipefail
+[[ $DOKKU_TRACE ]] && set -x
+source "$PLUGIN_CORE_AVAILABLE_PATH/common/functions"
+source "$PLUGIN_CORE_AVAILABLE_PATH/common/property-functions"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/internal-functions"
+
+trigger-auto-deploy-install() {
+  declare desc="checks python3 and creates the plugin's directories and systemd units (runs as root)"
+  declare trigger="install"
+  local data_dir="$DOKKU_LIB_ROOT/data/auto-deploy"
+
+  if ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
+    dokku_log_fail "auto-deploy needs python3 3.11 or newer (found: $(python3 --version 2>&1 || true))"
+  fi
+  fn-plugin-property-setup "auto-deploy"
+  mkdir -p "$data_dir"
+  chown "$DOKKU_SYSTEM_USER:$DOKKU_SYSTEM_GROUP" "$data_dir"
+  chmod 700 "$data_dir"
+  fn-auto-deploy-install-systemd-units
+}
+
+trigger-auto-deploy-install "$@"
